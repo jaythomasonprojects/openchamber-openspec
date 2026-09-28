@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenSpec</title>
+    <style>
+      :root {
+        background: transparent;
+        color: var(--oc-fg);
+        font-family: var(--oc-font, system-ui, sans-serif);
+        font-size: 16px;
+      }
+      :root.oc-themed {
+        background: var(--oc-bg);
+        font-size: 16px !important;
+      }
+      #root {
+        visibility: hidden;
+      }
+      body {
+        margin: 0;
+        font-size: 14px;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+      .board-shell {
+        max-width: 1480px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      .heading,
+      .toolbar,
+      .detail-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .board-header,
+      .detail-header {
+        display: grid;
+        gap: 12px;
+      }
+      .view-body {
+        margin-top: 24px;
+      }
+      .board-body {
+        display: grid;
+        gap: 16px;
+      }
+      .heading,
+      .detail-title-row {
+        flex-wrap: wrap;
+        row-gap: 0;
+      }
+      .heading h1 {
+        min-width: 0;
+      }
+      .heading > *,
+      .detail-title-row > * {
+        min-height: 28px;
+        display: inline-flex;
+        align-items: center;
+      }
+      .heading-actions {
+        display: inline-flex;
+        align-items: center;
+        flex: none;
+        gap: 8px;
+        margin-left: auto;
+      }
+      .board-tally {
+        color: var(--oc-muted, #a0a9b1);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .board-tally-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .refresh-control {
+        display: inline-flex;
+        align-items: center;
+      }
+      .loading-action .oc-sdk-btn > svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+      }
+      .loading-action .oc-sdk-btn[data-loading="true"] > svg {
+        display: none;
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+      .toolbar {
+        flex-wrap: wrap;
+        color: var(--oc-muted, #a0a9b1);
+        font-size: 12px;
+      }
+      .board-search {
+        display: block;
+        flex: 1;
+        min-width: 0;
+      }
+      .board-search .oc-sdk-search {
+        width: 100%;
+      }
+      body .oc-sdk-btn[data-size="sm"] {
+        height: 28px;
+      }
+      .board {
+        display: grid;
+        gap: 24px;
+      }
+      .stage h2 {
+        font-size: 13px;
+        margin: 0 0 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--oc-border, #30363c);
+      }
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+        gap: 12px;
+      }
+      .change-card {
+        border: 1px solid var(--oc-border, #30363c);
+        border-radius: var(--oc-radius, 8px);
+        background: var(--oc-elevated, #1d2226);
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+      }
+      .card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .card-actions [hidden] {
+        display: none;
+      }
+      .card-main {
+        border: 0;
+        background: none;
+        color: inherit;
+        padding: 0;
+        text-align: left;
+        cursor: pointer;
+      }
+      .card-main {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .card-main:focus-visible,
+      .artifact-tabs button:focus-visible {
+        outline: 2px solid var(--oc-focus, #75b6a0);
+        outline-offset: 3px;
+      }
+      .goal {
+        color: var(--oc-muted, #a0a9b1);
+        margin: 0;
+        line-height: 1.45;
+      }
+      .progress-label {
+        margin: 0;
+        color: var(--oc-muted, #a0a9b1);
+        font-size: 12px;
+      }
+      .empty-stage,
+      .notice {
+        color: var(--oc-muted, #a0a9b1);
+        margin: 0;
+        padding: 12px;
+        border: 1px dashed var(--oc-border, #30363c);
+        border-radius: 6px;
+      }
+      .notice.error {
+        color: var(--oc-error-text, #e3a1a1);
+      }
+      .board-notices:empty {
+        display: none;
+      }
+      .board-notices:not(:empty) {
+        display: grid;
+        gap: 8px;
+      }
+      .board-notices .notice {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        overflow-wrap: anywhere;
+      }
+      .detail {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        width: 100%;
+        height: 100dvh;
+        overflow-y: auto;
+        box-sizing: border-box;
+      }
+      .detail[hidden],
+      .board-shell[hidden] {
+        display: none !important;
+      }
+      .detail [hidden] {
+        display: none !important;
+      }
+      .detail-header {
+        flex: none;
+        padding: 16px 16px 0;
+      }
+      .detail-body {
+        display: flex;
+        flex: 1 1 0;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .detail-refresh-issue,
+      .detail-issue {
+        flex: none;
+        margin: 12px 16px 0;
+      }
+      .detail-refresh-issue {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .detail-back {
+        flex: none;
+      }
+      .detail-title-row h1 {
+        min-width: 0;
+        flex: 1 1 auto;
+        line-height: 1.4;
+      }
+      .detail-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        min-width: 0;
+        margin: 0 16px;
+      }
+      .detail-heading-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: auto;
+        flex: none;
+      }
+      .heading-actions [aria-label="OpenSpec quickstart"] {
+        width: 28px;
+        padding: 0;
+      }
+      .help-control .oc-sdk-btn > span {
+        display: none;
+      }
+      .help-control .oc-sdk-btn > svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
+      }
+      .detail-title-row .detail-back .oc-sdk-btn {
+        width: 28px;
+        padding: 0;
+        color: var(--oc-muted, #a0a9b1);
+      }
+      .detail-back .oc-sdk-btn > span {
+        display: none;
+      }
+      .detail-back .oc-sdk-btn > svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
+      }
+      .artifact-tabs {
+        flex: 0 0 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+      }
+      .artifact-tabs .oc-sdk-tabs {
+        padding: 0;
+      }
+      .artifact-tabs .oc-sdk-tab > span {
+        line-height: 18px;
+      }
+      .detail-content {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-anchor: none;
+        padding: 16px;
+      }
+      .readiness-note,
+      .content-status,
+      .detail-content details > div .document-status,
+      .document-issue {
+        margin: 0 0 12px;
+        color: var(--oc-muted, #a0a9b1);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .document-issue {
+        color: var(--oc-error-text, #e3a1a1);
+      }
+      .detail-content details.single-document {
+        border: 0;
+        padding: 0;
+      }
+      .detail-content details.single-document > summary {
+        display: none;
+      }
+      .detail-content details:not(.single-document) {
+        border: 1px solid var(--oc-border);
+        border-radius: var(--oc-radius, 8px);
+        padding: 9px 12px;
+        margin-bottom: 8px;
+      }
+      .detail-content details:not(.single-document) > summary {
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      .detail-content details summary:focus-visible {
+        outline: 2px solid var(--oc-focus, #75b6a0);
+        outline-offset: 3px;
+      }
+      .detail-content details:not(.single-document) > div {
+        padding-top: 12px;
+      }
+      .detail-footer {
+        flex: none;
+        display: flex;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--oc-border, #30363c);
+      }
+      .stage-label {
+        flex: none;
+      }
+      .detail-header > .goal {
+        max-height: 20dvh;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      @media (max-width: 560px) {
+        .detail-toolbar .artifact-tabs {
+          flex: 1 1 100%;
+          width: 100%;
+        }
+      }
+      .task-rows {
+        display: grid;
+        gap: 10px;
+        list-style: none;
+        margin: 16px 0;
+        padding: 0;
+      }
+      .task-row {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        padding: 12px;
+        border: 1px solid var(--oc-border, #30363c);
+        border-radius: var(--oc-radius, 8px);
+        background: var(--oc-elevated, #1d2226);
+      }
+      .task-indicator {
+        color: var(--oc-muted, #a0a9b1);
+      }
+      .task-row.done .task-indicator {
+        color: var(--oc-success, #97c8bb);
+      }
+      .task-title {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .tasks-view .notice {
+        margin: 12px 0;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        margin: 0 0 16px;
+        padding: 12px;
+        border: 1px solid var(--oc-border, #30363c);
+        border-radius: 6px;
+        font: 12px/1.5 var(--oc-mono, ui-monospace, monospace);
+      }
+      dialog:not(.detail) {
+        width: min(440px, calc(100vw - 32px));
+        border: 1px solid var(--oc-border, #30363c);
+        border-radius: 10px;
+        background: var(--oc-bg, #15191c);
+        color: inherit;
+      }
+      dialog form {
+        display: grid;
+        gap: 12px;
+      }
+      dialog h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+      dialog .create-actions,
+      dialog .delete-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }
+      @media (max-width: 560px) {
+        .board-header .heading {
+          display: grid;
+          justify-content: start;
+        }
+        .board-header .toolbar .board-search {
+          flex-basis: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script src="main.js"></script>
+  </body>
+</html>

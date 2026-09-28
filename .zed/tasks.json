@@ -1,0 +1,26 @@
+[
+  {
+    "label": "Lint: check",
+    "command": "npm run lint && npm run format:check && npm run typecheck"
+  },
+  {
+    "label": "Lint: format",
+    "command": "npm run format"
+  },
+  {
+    "label": "Lint: fix",
+    "command": "npm run lint:fix && npm run format"
+  },
+  {
+    "label": "Test: all",
+    "command": "npm test"
+  },
+  {
+    "label": "Clean: caches",
+    "command": "npm run clean"
+  },
+  {
+    "label": "Build: extension",
+    "command": "npm run build"
+  }
+]
