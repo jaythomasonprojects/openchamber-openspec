@@ -8,17 +8,13 @@ or delete active changes, and prepare editable, unsent workflow prompts in your 
 
 This is a lightweight GUI for OpenSpec, not a separate planning system. OpenSpec's CLI remains the
 source of truth for changes, artefacts and task progress. Contributions that make its information
-easier to view or keep this extension current with OpenSpec are welcome. New workflow behaviour
-belongs in OpenSpec first; this project should follow its supported interfaces rather than add
-parallel features.
+easier to view or keep this extension up to date with OpenSpec are welcome.
 
 ## Before you start
 
-- Use OpenChamber on the web or desktop with an OpenCode chat (extensions do not load in VS Code or
-  mobile).
 - Install the [OpenSpec CLI](https://openspec.dev/docs/installation) on the OpenChamber server, with
-  `openspec` on its `PATH`. This matters when accessing the server from another device.
-- Select the project you want to use. Initialise OpenSpec **there**, not in this repository.
+  `openspec` on its `PATH`.
+- Select the project you want to use and initialise OpenSpec.
 
 ## Get your project ready
 
@@ -44,13 +40,9 @@ parallel features.
    profile later, run `openspec update` in each existing project. Restart OpenCode if its skills are
    not visible.
 
-The board prepares `/openspec-explore`, `/openspec-propose`, `/openspec-apply-change`,
-`/openspec-verify-change` and `/openspec-archive-change` prompts. Viewing works without these
-skills, but the prompts need them. See [OpenSpec's profiles](https://openspec.dev/docs/profiles).
-
 ## Install the extension
 
-1. In OpenChamber, open **Settings → Extensions**. Paste
+1. In OpenChamber, open **Settings > Extensions**. Paste
    `https://github.com/jaythomasonprojects/openchamber-openspec.git` into **Folder, ZIP, or URL**
    and select **Add**.
 2. Review its permissions and choose **Allow and enable** if you trust it. Its local service runs
@@ -59,7 +51,7 @@ skills, but the prompts need them. See [OpenSpec's profiles](https://openspec.de
    it under **Extension pages**. An empty board is expected until you have an active change. Use
    **new change** to create one, or open an existing change to read its artefacts and tasks.
 
-Git installations can check for updates in **Settings → Extensions**.
+Git installations can check for updates in **Settings > Extensions**.
 
 ## Develop locally
 
@@ -67,6 +59,6 @@ Use Node 22.13+, npm and the OpenSpec CLI. Run `npm ci`, `npx playwright install
 `npm run check` to lint, check formatting and types, test, and build both installable bundles.
 OpenChamber does not build extensions when it installs them.
 
-For local changes, install this folder in **Settings → Extensions**. Rebuild and reinstall after
+For local changes, install this folder in **Settings > Extensions**. Rebuild and reinstall after
 updates; disable and re-enable the extension to restart its service. A panel reload does not restart
 the service.
