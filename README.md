@@ -4,6 +4,9 @@ An OpenChamber panel and full-page board for the OpenSpec changes in your select
 worktree. Browse planning artefacts and CLI-reported tasks without searching the file tree. Create
 or delete active changes, and prepare editable, unsent workflow prompts in your chat.
 
+![OpenSpec board grouping changes by stage, with task progress and workflow actions.](docs/images/board-view.jpg)
+![OpenSpec change detail showing the selected Specs tab and its specification.](docs/images/change-view.jpg)
+
 ## Scope
 
 This is a lightweight GUI for OpenSpec, not a separate planning system. OpenSpec's CLI remains the
