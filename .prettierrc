@@ -1,0 +1,13 @@
+{
+  "proseWrap": "always",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "overrides": [
+    {
+      "files": ".zed/settings.json",
+      "options": {
+        "trailingComma": "none"
+      }
+    }
+  ]
+}

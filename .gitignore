@@ -1,0 +1,12 @@
+# Node
+node_modules/
+build/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

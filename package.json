@@ -1,0 +1,59 @@
+{
+  "name": "openchamber-openspec",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:panel && npm run build:service",
+    "build:panel": "esbuild src/panel.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/main.js",
+    "build:service": "esbuild src/service.ts --bundle --format=cjs --platform=node --target=node22 --outfile=service/main.js",
+    "build:model:test": "esbuild src/model.ts --bundle --format=esm --platform=node --target=node22 --outfile=build/model.mjs",
+    "build:resources:test": "esbuild src/panel/resources.ts --bundle --format=esm --platform=node --target=node22 --outfile=build/resources.mjs",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm test && npm run build",
+    "lint": "eslint src eslint.config.mjs",
+    "lint:fix": "eslint src eslint.config.mjs --fix",
+    "format:check": "prettier --check src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .zed/tasks.json .vscode/tasks.json",
+    "format": "prettier --write src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .zed/tasks.json .vscode/tasks.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:panel && npm run build:service && npm run build:model:test && npm run build:resources:test && node --test test/*.test.mjs",
+    "clean": "node -e \"for (const file of ['panel/main.js', 'service/main.js']) require('node:fs').rmSync(file, { force: true })\""
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "contributes": {
+      "panel": {
+        "id": "openspec-board",
+        "name": "OpenSpec",
+        "icon": "assets/openspec-logo.svg",
+        "entry": "panel/index.html"
+      },
+      "page": true,
+      "capabilities": [
+        "prompt"
+      ],
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "permissions": {
+          "exec": [
+            "openspec"
+          ]
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@openchamber/sdk": "1.24.2",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.9",
+    "playwright": "^1.58.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.1"
+  }
+}
