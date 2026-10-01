@@ -1667,6 +1667,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       id,
       root: string(item.root),
       goal: item.goal,
+      affectedAreas: names(item.affectedAreas),
       artifacts,
       applyRequires: names(item.applyRequires),
       documents
@@ -1996,6 +1997,39 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     root2.querySelector("button").prepend(svg);
   }
 
+  // src/panel/area-badges.ts
+  function mountAreaBadges(parent) {
+    const group = document.createElement("div");
+    group.className = "affected-areas";
+    group.hidden = true;
+    parent.append(group);
+    let signature = "[]";
+    let handles = [];
+    function clear() {
+      handles.forEach((handle) => handle.dispose());
+      handles = [];
+      group.replaceChildren();
+    }
+    return {
+      update(areas) {
+        const next = JSON.stringify(areas);
+        if (signature === next) return;
+        clear();
+        signature = next;
+        group.hidden = !areas.length;
+        for (const label of areas) {
+          const target = document.createElement("span");
+          group.append(target);
+          handles.push(mountBadge(target, { label, tone: "neutral" }));
+        }
+      },
+      dispose() {
+        clear();
+        group.remove();
+      }
+    };
+  }
+
   // src/panel/board-view.ts
   function mountBoardView(root2, callbacks) {
     const main = document.createElement("div");
@@ -2120,10 +2154,13 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         title.addEventListener("click", () => cards.get(id)?.current.open());
         const status = document.createElement("p");
         status.className = "stale-label";
-        node.append(title, progressLabel, progressRoot, actionRoot, status);
+        node.append(title);
+        const areas = mountAreaBadges(node);
+        node.append(progressLabel, progressRoot, actionRoot, status);
         entry = {
           node,
           title,
+          areas,
           progressLabel,
           progressRoot,
           progress,
@@ -2140,6 +2177,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       entry.current = item;
       const change = item.change;
       if (entry.title.textContent !== change.id) entry.title.textContent = change.id;
+      entry.areas.update(change.affectedAreas);
       const label = `${change.completedArtifacts} of ${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " \xB7 No tasks yet" : ""}`;
       if (entry.progressLabel.textContent !== label) entry.progressLabel.textContent = label;
       entry.progressRoot.hidden = !change.totalTasks;
@@ -2216,6 +2254,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           entry.explore.dispose();
           entry.verify.dispose();
           entry.progress.dispose();
+          entry.areas.dispose();
           entry.node.remove();
           cards.delete(id);
         }
@@ -2251,6 +2290,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           entry.explore.dispose();
           entry.verify.dispose();
           entry.progress.dispose();
+          entry.areas.dispose();
         }
         cards.clear();
         newChange.dispose();
@@ -2440,7 +2480,11 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     const title = document.createElement("h1");
     title.id = "change-detail-title";
     shell.setAttribute("aria-labelledby", title.id);
-    titleRow.append(backRoot, title);
+    const titleGroup = document.createElement("div");
+    titleGroup.className = "detail-title-group";
+    titleGroup.append(title);
+    const areas = mountAreaBadges(titleGroup);
+    titleRow.append(backRoot, titleGroup);
     const headingActions = document.createElement("div");
     headingActions.className = "detail-heading-actions";
     const refreshRoot = document.createElement("span");
@@ -2550,6 +2594,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     let artifactId = "";
     let scrollSelection = "";
     function reset() {
+      areas.update([]);
       tasksView.reset();
       tabControl.update({ items: [], activeId: "" });
       tabSignature = "";
@@ -2596,6 +2641,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           changeId = state.change.id;
         }
         title.textContent = state.change.id;
+        areas.update(state.change.affectedAreas);
         goal.textContent = state.change.goal ?? "Goal unavailable";
         stageBadge.update({
           label: stageLabel(state.change.stage),
@@ -2706,6 +2752,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         retry.dispose();
         deleteAction.dispose();
         stageBadge.dispose();
+        areas.dispose();
         action.dispose();
         explore.dispose();
         verify.dispose();

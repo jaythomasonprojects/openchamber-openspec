@@ -6,6 +6,7 @@ import { mountDocumentView } from "./document-view.js";
 import { mountTasksView } from "./tasks-view.js";
 import { stageLabel, workflowLabel } from "./workflow.js";
 import { addButtonIcon } from "./button-icon.js";
+import { mountAreaBadges } from "./area-badges.js";
 
 export type DetailState = {
   change: DerivedChange;
@@ -93,7 +94,11 @@ export function mountDetailView(
   const title = document.createElement("h1");
   title.id = "change-detail-title";
   shell.setAttribute("aria-labelledby", title.id);
-  titleRow.append(backRoot, title);
+  const titleGroup = document.createElement("div");
+  titleGroup.className = "detail-title-group";
+  titleGroup.append(title);
+  const areas = mountAreaBadges(titleGroup);
+  titleRow.append(backRoot, titleGroup);
   const headingActions = document.createElement("div");
   headingActions.className = "detail-heading-actions";
   const refreshRoot = document.createElement("span");
@@ -206,6 +211,7 @@ export function mountDetailView(
   let artifactId = "";
   let scrollSelection = "";
   function reset() {
+    areas.update([]);
     tasksView.reset();
     tabControl.update({ items: [], activeId: "" });
     tabSignature = "";
@@ -251,6 +257,7 @@ export function mountDetailView(
         changeId = state.change.id;
       }
       title.textContent = state.change.id;
+      areas.update(state.change.affectedAreas);
       goal.textContent = state.change.goal ?? "Goal unavailable";
       stageBadge.update({
         label: stageLabel(state.change.stage),
@@ -396,6 +403,7 @@ export function mountDetailView(
       retry.dispose();
       deleteAction.dispose();
       stageBadge.dispose();
+      areas.dispose();
       action.dispose();
       explore.dispose();
       verify.dispose();

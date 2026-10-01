@@ -109,17 +109,20 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     }
   }
 
-  async function goalFor(state: State): Promise<string | null> {
+  async function metadataFor(
+    state: State,
+  ): Promise<{ goal: string | null; affectedAreas: string[] }> {
     const metadataPath = resolve(state.changeRoot, ".openspec.yaml");
     let canonical: string;
     try {
       canonical = await realpath(metadataPath);
     } catch (caught) {
-      if ((caught as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((caught as NodeJS.ErrnoException).code === "ENOENT")
+        return { goal: null, affectedAreas: [] };
       throw caught;
     }
     if (!inside(canonical, state.changeRoot))
-      throw serviceError("BAD_DOCUMENT_PATH", "Goal metadata is outside the change.", 502);
+      throw serviceError("BAD_DOCUMENT_PATH", "Change metadata is outside the change.", 502);
     const file = await open(canonical, "r");
     let metadata: unknown;
     try {
@@ -131,14 +134,19 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
         length += bytesRead;
       }
       if (length > 240_000)
-        throw serviceError("METADATA_TOO_LARGE", "Goal metadata is too large to read.", 413);
+        throw serviceError("METADATA_TOO_LARGE", "Change metadata is too large to read.", 413);
       metadata = parseYaml(buffer.toString("utf8", 0, length));
     } finally {
       await file.close();
     }
-    return metadata && typeof metadata === "object" && typeof (metadata as Json).goal === "string"
-      ? ((metadata as Json).goal as string)
-      : null;
+    const fields = metadata && typeof metadata === "object" ? (metadata as Json) : {};
+    const areas = fields.affected_areas === undefined ? [] : fields.affected_areas;
+    if (!Array.isArray(areas) || areas.some((area) => typeof area !== "string" || !area.length))
+      throw new Error("Invalid affected areas.");
+    return {
+      goal: typeof fields.goal === "string" ? fields.goal : null,
+      affectedAreas: areas as string[],
+    };
   }
 
   async function summaryFor(directory: string, current: Scope, change: string): Promise<CliResult> {
@@ -151,7 +159,7 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
         value: {
           id: change,
           root: current.root,
-          goal: await goalFor(state),
+          ...(await metadataFor(state)),
           artifacts,
           applyRequires: state.status.applyRequires,
           documents: documentsFor(state, artifacts),

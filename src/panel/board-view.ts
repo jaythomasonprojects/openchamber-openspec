@@ -3,6 +3,7 @@ import type { DerivedChange } from "../model.js";
 import { stages, workflowLabel } from "./workflow.js";
 import { mountHelpButton } from "./help-button.js";
 import { addButtonIcon } from "./button-icon.js";
+import { mountAreaBadges } from "./area-badges.js";
 
 export type BoardCard = {
   change: DerivedChange;
@@ -115,6 +116,7 @@ export function mountBoardView(
     {
       node: HTMLElement;
       title: HTMLButtonElement;
+      areas: ReturnType<typeof mountAreaBadges>;
       progressLabel: HTMLElement;
       progressRoot: HTMLElement;
       progress: ReturnType<typeof mountProgress>;
@@ -173,10 +175,13 @@ export function mountBoardView(
       title.addEventListener("click", () => cards.get(id)?.current.open());
       const status = document.createElement("p");
       status.className = "stale-label";
-      node.append(title, progressLabel, progressRoot, actionRoot, status);
+      node.append(title);
+      const areas = mountAreaBadges(node);
+      node.append(progressLabel, progressRoot, actionRoot, status);
       entry = {
         node,
         title,
+        areas,
         progressLabel,
         progressRoot,
         progress,
@@ -193,6 +198,7 @@ export function mountBoardView(
     entry.current = item;
     const change = item.change;
     if (entry.title.textContent !== change.id) entry.title.textContent = change.id;
+    entry.areas.update(change.affectedAreas);
     const label = `${change.completedArtifacts} of ${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " · No tasks yet" : ""}`;
     if (entry.progressLabel.textContent !== label) entry.progressLabel.textContent = label;
     entry.progressRoot.hidden = !change.totalTasks;
@@ -271,6 +277,7 @@ export function mountBoardView(
         entry.explore.dispose();
         entry.verify.dispose();
         entry.progress.dispose();
+        entry.areas.dispose();
         entry.node.remove();
         cards.delete(id);
       }
@@ -318,6 +325,7 @@ export function mountBoardView(
         entry.explore.dispose();
         entry.verify.dispose();
         entry.progress.dispose();
+        entry.areas.dispose();
       }
       cards.clear();
       newChange.dispose();

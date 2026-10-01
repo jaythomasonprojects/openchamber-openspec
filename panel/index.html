@@ -159,6 +159,25 @@
         font-weight: 600;
         overflow-wrap: anywhere;
       }
+      .affected-areas {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .affected-areas[hidden] {
+        display: none;
+      }
+      .affected-areas > span {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .affected-areas .oc-sdk-badge {
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
       .card-main:focus-visible,
       .artifact-tabs button:focus-visible {
         outline: 2px solid var(--oc-focus, #75b6a0);
@@ -243,6 +262,18 @@
         min-width: 0;
         flex: 1 1 auto;
         line-height: 1.4;
+      }
+      .detail-title-group {
+        flex: 1 1 0;
+        min-width: 0;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .detail-title-group h1 {
+        flex: 0 1 auto;
+        min-height: 28px;
+        display: inline-flex;
+        align-items: center;
       }
       .detail-toolbar {
         display: flex;

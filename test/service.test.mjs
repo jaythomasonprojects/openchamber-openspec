@@ -207,30 +207,61 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
   const changeRoot = join(root, "openspec", "changes", "goal-change");
   const metadataPath = join(changeRoot, ".openspec.yaml");
   await mkdir(changeRoot, { recursive: true });
-  const runner = async (_directory, args) => ({
-    ok: true,
-    value:
-      args[0] === "context"
-        ? { root: { path: root } }
-        : {
-            root: { path: root },
-            changeRoot,
-            artifacts: [],
-            applyRequires: [],
-            artifactPaths: {},
-          },
-  });
+  const calls = [];
+  const runner = async (_directory, args) => (
+    calls.push(args[0]),
+    {
+      ok: true,
+      value:
+        args[0] === "context"
+          ? { root: { path: root } }
+          : {
+              root: { path: root },
+              changeRoot,
+              artifacts: [],
+              applyRequires: [],
+              artifactPaths: {},
+            },
+    }
+  );
   try {
     await withService(async (url) => {
       const summary = async () => {
+        const before = calls.length;
         const response = await fetch(`${url}/summary`, {
           method: "POST",
           headers: { authorization: "Bearer test-token" },
           body: JSON.stringify({ directory: root, expectedRoot: root, change: "goal-change" }),
         });
+        assert.deepEqual(calls.slice(before), ["context", "status"]);
         return { status: response.status, value: await response.json() };
       };
+      assert.deepEqual((await summary()).value.affectedAreas, []);
       assert.deepEqual((await summary()).value.goal, null);
+      for (const [areas, expected] of [
+        [undefined, []],
+        [[], []],
+        [
+          ["auth", "api", "auth", " <b>literal</b> "],
+          ["auth", "api", "auth", " <b>literal</b> "],
+        ],
+      ]) {
+        await writeFile(
+          metadataPath,
+          JSON.stringify({
+            goal: "Kept goal",
+            ...(areas === undefined ? {} : { affected_areas: areas }),
+          }),
+        );
+        const result = await summary();
+        assert.equal(result.status, 200);
+        assert.equal(result.value.goal, "Kept goal");
+        assert.deepEqual(result.value.affectedAreas, expected);
+      }
+      for (const areas of [null, "auth", {}, [""], [1], ["auth", false]]) {
+        await writeFile(metadataPath, JSON.stringify({ affected_areas: areas }));
+        assert.equal((await summary()).value.error.code, "BAD_CLI_OUTPUT");
+      }
       const header = "goal: boundary\n# ";
       await writeFile(metadataPath, header + "x".repeat(240_000 - Buffer.byteLength(header)));
       assert.equal((await summary()).value.goal, "boundary");
@@ -245,6 +276,11 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
       assert.equal((await summary()).value.error.code, "METADATA_TOO_LARGE");
       await writeFile(metadataPath, "goal: café\n");
       assert.equal((await summary()).value.goal, "café");
+      await rm(metadataPath);
+      const outside = join(root, "outside.yaml");
+      await writeFile(outside, "affected_areas: [unsafe]\n");
+      await symlink(outside, metadataPath);
+      assert.equal((await summary()).value.error.code, "BAD_DOCUMENT_PATH");
       assert.equal(
         (await fetch(`${url}/health`, { headers: { authorization: "Bearer test-token" } })).status,
         200,

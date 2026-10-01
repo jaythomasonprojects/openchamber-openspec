@@ -97,6 +97,7 @@ function hostHtml() {
     window.__edit = (text) => { proposal = text; tasks[1].done = true; changes[0].completedTasks = 2; };
     window.__unedit = () => { tasks[1].done = false; changes[0].completedTasks = 1; };
     window.__goal = (id, value) => { changes.find((item) => item.id === id).goal = value; };
+    window.__areas = (id, value) => { changes.find((item) => item.id === id).affectedAreas = value; };
     window.__rename = (before, after) => { changes.find((item) => item.id === before).id = after; };
     window.__remove = (id) => { const index = changes.findIndex((item) => item.id === id); changes.splice(index, 1); };
     window.__recreate = (id) => { changes.push({ id, goal: "Recreated goal", completedTasks: 0, totalTasks: 0 }); };
@@ -257,6 +258,8 @@ function hostHtml() {
       }
     });
     function respondSummary(body, send) {
+           const reply = send;
+           send = (value, status) => reply(value.error ? value : { affectedAreas: changes.find((change) => change.id === body.change)?.affectedAreas ?? [], ...value }, status);
           const item = changes.find((change) => change.id === body.change);
           if (!item) send({ error: { code: "CHANGE_UNAVAILABLE", message: "Removed" } }, 404);
           else if (failSummary && item.id === "first-change") { failSummary = false;
@@ -342,6 +345,218 @@ async function withPanel(run) {
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
   }
 }
+
+test("affected areas are neutral literal read-only badges on cards and detail", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const labels = ["auth", "api", "auth", "<img src=x onerror=alert(1)>"];
+    await page.evaluate((labels) => __areas("first-change", labels), labels);
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    const card = panel
+      .locator(".change-card")
+      .filter({ has: panel.getByRole("button", { name: "first-change", exact: true }) });
+    await card.locator(".affected-areas .oc-sdk-badge").first().waitFor();
+    assert.deepEqual(await card.locator(".affected-areas .oc-sdk-badge").allTextContents(), labels);
+    assert.equal(
+      await card.locator(".affected-areas img, .affected-areas button, .affected-areas a").count(),
+      0,
+    );
+    assert.equal(
+      await card
+        .locator(".affected-areas")
+        .evaluate((node) => node.previousElementSibling.className),
+      "card-main",
+    );
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    assert.deepEqual(
+      await panel.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+      labels,
+    );
+    assert.equal(await panel.locator(".stage-label .oc-sdk-badge").textContent(), "In Progress");
+    assert.equal(
+      await panel.locator(".stage-label .oc-sdk-badge").getAttribute("data-tone"),
+      "primary",
+    );
+    assert.ok(
+      await panel.locator(".detail-title-group").evaluate((group) => {
+        const title = group.querySelector("h1").getBoundingClientRect();
+        const areas = group.querySelector(".affected-areas").getBoundingClientRect();
+        return areas.left > title.right && areas.top < title.bottom;
+      }),
+      "detail areas sit beside the title on a wide layout",
+    );
+    assert.ok(
+      await panel
+        .locator(".affected-areas .oc-sdk-badge")
+        .evaluateAll((nodes) => nodes.every((node) => !node.hasAttribute("data-tone"))),
+    );
+    await panel.getByRole("button", { name: "Back to changes" }).click();
+    assert.equal(
+      await panel
+        .locator(".change-card")
+        .filter({ has: panel.getByRole("button", { name: "second-change", exact: true }) })
+        .locator(".affected-areas")
+        .isVisible(),
+      false,
+    );
+  });
+});
+
+test("affected area refresh retains handles and focus, wraps labels and discards old contexts", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const longTitle = "long-change-" + "title-".repeat(20) + "end";
+    const labels = ["area".repeat(40), "Several words in another affected area", "third"];
+    await page.evaluate(
+      ({ longTitle, labels }) => {
+        __rename("first-change", longTitle);
+        __areas(longTitle, labels);
+      },
+      { longTitle, labels },
+    );
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: longTitle, exact: true }).waitFor();
+    for (const width of [320, 1076]) {
+      await page.setViewportSize({ width, height: 700 });
+      assert.ok(
+        await panel.locator("body").evaluate((body) => body.scrollWidth <= innerWidth),
+        "board has no page overflow",
+      );
+    }
+    await panel.getByRole("button", { name: longTitle, exact: true }).click();
+    await panel.getByRole("tab", { name: /Proposal/ }).waitFor();
+    for (const width of [320, 1076]) {
+      await page.setViewportSize({ width, height: 700 });
+      assert.ok(
+        await panel.locator("body").evaluate((body) => body.scrollWidth <= innerWidth),
+        "detail has no page overflow",
+      );
+      assert.deepEqual(
+        await panel.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+        labels,
+      );
+    }
+    const before = await page.evaluate(() => __requests.length);
+    await panel.locator(".detail").evaluate((detail) => {
+      window.__oldBadge = detail.querySelector(".affected-areas .oc-sdk-badge");
+      window.__oldShell = detail;
+      detail.querySelector(".goal").focus();
+    });
+    await panel
+      .getByRole("button", { name: "refresh", exact: true })
+      .evaluate((button) => button.click());
+    await page.waitForFunction((before) => __requests.length >= before + 8, before);
+    await panel.getByRole("button", { name: "refresh", exact: true }).waitFor();
+    assert.ok(
+      await panel
+        .locator(".detail")
+        .evaluate(
+          (detail) =>
+            detail === window.__oldShell &&
+            detail.querySelector(".affected-areas .oc-sdk-badge") === window.__oldBadge,
+        ),
+    );
+    assert.equal(
+      await panel.locator(".detail .goal").evaluate((button) => button === document.activeElement),
+      true,
+    );
+    const requests = await page.evaluate(
+      (before) => __requests.slice(before).map((request) => request.path),
+      before,
+    );
+    assert.equal(requests.filter((path) => path === "/changes").length, 1);
+    assert.equal(requests.filter((path) => path === "/summary").length, 2);
+    assert.equal(requests.length, 8);
+    await page.evaluate((id) => __areas(id, ["replacement"]), longTitle);
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel
+      .locator(".detail .affected-areas")
+      .getByText("replacement", { exact: true })
+      .waitFor();
+    assert.ok(await panel.locator(".detail").evaluate(() => !window.__oldBadge.isConnected));
+    await page.evaluate((id) => __areas(id, []), longTitle);
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.locator(".detail .affected-areas").waitFor({ state: "hidden" });
+    await panel.getByRole("button", { name: "Back to changes" }).click();
+    await panel.getByLabel("Search changes").fill("replacement");
+    assert.equal(await panel.locator(".change-card").count(), 0);
+    await panel.getByLabel("Search changes").fill("");
+    await page.evaluate(() => {
+      __holdSummaries();
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await page.waitForFunction(
+      () => __requests.filter((request) => request.path === "/summary").length >= 12,
+    );
+    await page.evaluate(() => __directory("/tmp/other-project"));
+    await panel.getByText("other-project", { exact: true }).waitFor();
+    await page.evaluate(() => __releaseSummaries());
+    assert.equal(await panel.locator(".affected-areas .oc-sdk-badge").count(), 0);
+  });
+});
+
+test("failed area summaries retain successful badges and removed cards dispose their badges", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => __areas("first-change", ["retained"]));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.locator(".affected-areas").getByText("retained", { exact: true }).waitFor();
+    await panel.locator(".board-shell").evaluate((board) => {
+      window.__cardBadge = board.querySelector(".affected-areas .oc-sdk-badge");
+    });
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await page.evaluate(() => {
+      __areas("first-change", [""]);
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.locator(".detail-refresh-issue").waitFor();
+    assert.deepEqual(
+      await panel.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+      ["retained"],
+    );
+    await panel.getByRole("button", { name: "Back to changes" }).click();
+    assert.deepEqual(
+      await panel.locator(".change-card .affected-areas .oc-sdk-badge").allTextContents(),
+      ["retained"],
+    );
+    assert.ok(
+      await panel
+        .locator(".board-shell")
+        .evaluate(
+          (board) => board.querySelector(".affected-areas .oc-sdk-badge") === window.__cardBadge,
+        ),
+    );
+    await panel.getByLabel("Search changes").fill("retained");
+    assert.equal(await panel.locator(".change-card").count(), 0);
+    await panel.getByLabel("Search changes").fill("");
+    await page.evaluate(() => __remove("first-change"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel
+      .getByRole("button", { name: "first-change", exact: true })
+      .waitFor({ state: "detached" });
+    assert.ok(await panel.locator(".board-shell").evaluate(() => !window.__cardBadge.isConnected));
+    await page.evaluate(() => __areas("second-change", ["context-owned"]));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.locator(".affected-areas").getByText("context-owned", { exact: true }).waitFor();
+    await panel.locator(".board-shell").evaluate((board) => {
+      window.__contextBadge = board.querySelector(".affected-areas .oc-sdk-badge");
+    });
+    await page.evaluate(() => __directory("/tmp/new-context"));
+    await panel.getByText("new-context", { exact: true }).waitFor();
+    assert.ok(
+      await panel.locator(".board-shell").evaluate(() => !window.__contextBadge.isConnected),
+    );
+  });
+});
 
 test("panel harness fails on an uncaught asynchronous browser error", async () => {
   await assert.rejects(

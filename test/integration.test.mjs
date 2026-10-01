@@ -17,6 +17,11 @@ test("compiled panel reads and creates through the real local service and tempor
     const change = "integration-change";
     await fixtureChange(directory, change, "Integration proposal content");
     const changeDir = join(directory, "openspec", "changes", change);
+    const metadataPath = join(changeDir, ".openspec.yaml");
+    const metadata = await readFile(metadataPath, "utf8");
+    const setAreas = (areas) =>
+      writeFile(metadataPath, metadata + `\naffected_areas: ${JSON.stringify(areas)}\n`);
+    await setAreas(["auth", "api", "auth"]);
     await writeFile(
       join(changeDir, "tasks.md"),
       "# Tasks\n\n## Delivery\n\n- [ ] 1.1 Review integrated view\n      Keep a continuation in the source.\n",
@@ -116,7 +121,15 @@ test("compiled panel reads and creates through the real local service and tempor
       await page.goto(hostUrl, { waitUntil: "networkidle" });
       const panelFrame = page.frameLocator('iframe[title="OpenSpec integration panel"]');
       await panelFrame.getByRole("button", { name: change }).waitFor({ timeout: 30000 });
+      assert.deepEqual(
+        await panelFrame.locator(".change-card .affected-areas .oc-sdk-badge").allTextContents(),
+        ["auth", "api", "auth"],
+      );
       await panelFrame.getByRole("button", { name: change }).click();
+      assert.deepEqual(
+        await panelFrame.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+        ["auth", "api", "auth"],
+      );
       await panelFrame
         .locator(".detail-content pre")
         .getByText("Integration proposal content")
@@ -199,6 +212,11 @@ test("compiled panel reads and creates through the real local service and tempor
         "# Tasks\n\n## Delivery\n\n- [x] 1.1 Review integrated view\n      Updated source continuation.\n",
       );
       assert.equal(await panelFrame.getByText("1 of 1 tasks complete", { exact: true }).count(), 0);
+      await setAreas(["panel", "service"]);
+      assert.deepEqual(
+        await panelFrame.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+        ["auth", "api", "auth"],
+      );
       await panelFrame.getByRole("button", { name: "Back to changes" }).click();
       await panelFrame.getByRole("button", { name: "refresh", exact: true }).click();
       await panelFrame
@@ -206,6 +224,10 @@ test("compiled panel reads and creates through the real local service and tempor
         .first()
         .waitFor({ timeout: 30000 });
       await panelFrame.getByRole("button", { name: change }).click();
+      assert.deepEqual(
+        await panelFrame.locator(".detail .affected-areas .oc-sdk-badge").allTextContents(),
+        ["panel", "service"],
+      );
       await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
       await panelFrame.getByText(/1.1 Review integrated view/).waitFor();
       assert.equal(await panelFrame.locator(".task-row.done").count(), 1);
@@ -216,9 +238,16 @@ test("compiled panel reads and creates through the real local service and tempor
         .getByText("specs/first/spec.md")
         .click();
       await panelFrame.getByText("# Edited integration document").waitFor({ timeout: 30000 });
+      await setAreas([]);
+      await panelFrame.getByRole("button", { name: "refresh", exact: true }).click();
+      await panelFrame
+        .locator(".detail .affected-areas")
+        .waitFor({ state: "hidden", timeout: 30000 });
+      assert.equal(await panelFrame.locator(".detail .affected-areas .oc-sdk-badge").count(), 0);
       await panelFrame.getByRole("button", { name: "Back to changes" }).click();
       await panelFrame.getByRole("heading", { name: "Complete 1" }).waitFor({ timeout: 30000 });
       const completedCard = panelFrame.locator(".change-card").filter({ hasText: change });
+      assert.equal(await completedCard.locator(".affected-areas").isVisible(), false);
       await completedCard.getByRole("button", { name: "archive" }).click();
       await page.waitForFunction(() =>
         window.__compose?.text?.startsWith("/openspec-archive-change "),

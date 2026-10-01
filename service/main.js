@@ -7599,17 +7599,18 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       return serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec change listing.", 502);
     }
   }
-  async function goalFor(state) {
+  async function metadataFor(state) {
     const metadataPath = (0, import_node_path.resolve)(state.changeRoot, ".openspec.yaml");
     let canonical;
     try {
       canonical = await (0, import_promises.realpath)(metadataPath);
     } catch (caught) {
-      if (caught.code === "ENOENT") return null;
+      if (caught.code === "ENOENT")
+        return { goal: null, affectedAreas: [] };
       throw caught;
     }
     if (!inside(canonical, state.changeRoot))
-      throw serviceError("BAD_DOCUMENT_PATH", "Goal metadata is outside the change.", 502);
+      throw serviceError("BAD_DOCUMENT_PATH", "Change metadata is outside the change.", 502);
     const file = await (0, import_promises.open)(canonical, "r");
     let metadata;
     try {
@@ -7621,12 +7622,19 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
         length += bytesRead;
       }
       if (length > 24e4)
-        throw serviceError("METADATA_TOO_LARGE", "Goal metadata is too large to read.", 413);
+        throw serviceError("METADATA_TOO_LARGE", "Change metadata is too large to read.", 413);
       metadata = (0, import_yaml.parse)(buffer.toString("utf8", 0, length));
     } finally {
       await file.close();
     }
-    return metadata && typeof metadata === "object" && typeof metadata.goal === "string" ? metadata.goal : null;
+    const fields = metadata && typeof metadata === "object" ? metadata : {};
+    const areas = fields.affected_areas === void 0 ? [] : fields.affected_areas;
+    if (!Array.isArray(areas) || areas.some((area) => typeof area !== "string" || !area.length))
+      throw new Error("Invalid affected areas.");
+    return {
+      goal: typeof fields.goal === "string" ? fields.goal : null,
+      affectedAreas: areas
+    };
   }
   async function summaryFor(directory, current, change) {
     const state = await changeState(directory, change, current);
@@ -7638,7 +7646,7 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
         value: {
           id: change,
           root: current.root,
-          goal: await goalFor(state),
+          ...await metadataFor(state),
           artifacts,
           applyRequires: state.status.applyRequires,
           documents: documentsFor(state, artifacts)

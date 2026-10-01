@@ -14,6 +14,7 @@ export type ChangeMetadata = {
   id: string;
   root: string;
   goal: string | null;
+  affectedAreas: string[];
   artifacts: Artifact[];
   applyRequires: string[];
   documents: DocumentDescriptor[];
@@ -119,6 +120,7 @@ export function decodeSummary(value: unknown): ChangeMetadata {
     id,
     root: string(item.root),
     goal: item.goal as string | null,
+    affectedAreas: names(item.affectedAreas),
     artifacts,
     applyRequires: names(item.applyRequires),
     documents,

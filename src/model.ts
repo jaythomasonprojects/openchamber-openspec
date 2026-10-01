@@ -10,6 +10,7 @@ export type Artifact = {
 export type ChangeSummary = {
   id: string;
   goal: string | null;
+  affectedAreas: string[];
   artifacts: Artifact[];
   applyRequires: string[];
   completedTasks: number;
