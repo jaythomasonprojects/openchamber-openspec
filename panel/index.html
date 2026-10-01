@@ -435,6 +435,80 @@
         border-radius: 6px;
         font: 12px/1.5 var(--oc-mono, ui-monospace, monospace);
       }
+      .document-content {
+        min-width: 0;
+        max-width: 100%;
+        font: 14px/1.6 var(--oc-font, system-ui, sans-serif);
+        overflow-wrap: anywhere;
+      }
+      .document-content :is(h1, h2, h3, h4, h5, h6) {
+        margin: 1.2em 0 0.5em;
+        line-height: 1.3;
+        font-weight: 600;
+      }
+      .document-content h1 {
+        font-size: 1.7em;
+      }
+      .document-content h2 {
+        font-size: 1.4em;
+      }
+      .document-content h3 {
+        font-size: 1.2em;
+      }
+      .document-content :is(h4, h5, h6) {
+        font-size: 1em;
+      }
+      .document-content > :first-child {
+        margin-top: 0;
+      }
+      .document-content :is(p, ul, ol, blockquote) {
+        margin: 0.7em 0;
+      }
+      .document-content :is(ul, ol) {
+        padding-left: 1.8em;
+      }
+      .document-content blockquote {
+        margin-left: 0;
+        padding-left: 1em;
+        border-left: 3px solid var(--oc-border);
+        color: var(--oc-muted);
+      }
+      .document-content a {
+        color: var(--oc-primary-text, var(--oc-fg));
+      }
+      .document-content a:focus-visible {
+        outline: 2px solid var(--oc-focus);
+      }
+      .document-content code {
+        font-family: var(--oc-mono, monospace);
+      }
+      .document-content pre {
+        white-space: pre;
+        overflow-wrap: normal;
+        overflow-x: auto;
+        max-width: 100%;
+        background: var(--oc-elevated);
+      }
+      .document-content input[type="checkbox"] {
+        accent-color: var(--oc-primary-text);
+      }
+      .document-content .document-table {
+        max-width: 100%;
+        overflow-x: auto;
+        margin: 1em 0;
+      }
+      .document-content table {
+        border-collapse: collapse;
+        white-space: nowrap;
+      }
+      .document-content :is(th, td) {
+        border: 1px solid var(--oc-border);
+        padding: 6px 10px;
+      }
+      .document-content th {
+        background: var(--oc-elevated);
+        text-align: left;
+      }
       dialog:not(.detail) {
         width: min(440px, calc(100vw - 32px));
         border: 1px solid var(--oc-border, #30363c);

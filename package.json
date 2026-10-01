@@ -44,6 +44,8 @@
   },
   "dependencies": {
     "@openchamber/sdk": "1.24.2",
+    "dompurify": "^3.4.16",
+    "marked": "^18.0.14",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
@@ -51,8 +53,8 @@
     "@types/node": "^22.20.4",
     "esbuild": "^0.28.2",
     "eslint": "^10.11.0",
-    "prettier": "^3.9.9",
     "playwright": "^1.58.2",
+    "prettier": "^3.9.9",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1"
   }

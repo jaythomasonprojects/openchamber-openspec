@@ -527,6 +527,18 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     },
   });
   const detailView = mountDetailView(detailRoot, {
+    openUrl: (url) => {
+      void host
+        .openUrl(url)
+        .catch(async (caught: unknown) => {
+          await host.toast({
+            kind: "error",
+            message:
+              caught instanceof HostRequestError ? caught.message : "Cannot open document link",
+          });
+        })
+        .catch(() => {});
+    },
     refresh: () => loadBoard(true),
     delete: () => {
       if (scope && selectedChange && !unavailableIds.has(selectedChange.id))

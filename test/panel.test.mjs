@@ -55,6 +55,10 @@ function hostHtml() {
       { id: "second-change", goal: "Review the specs", completedTasks: 0, totalTasks: 0 },
     ];
     let proposal = "First version of proposal";
+    const documents = {};
+    let customSelector = "checklist.md";
+    window.__document = (selector, text) => { documents[selector] = text; };
+    window.__customSelector = (selector) => { customSelector = selector; custom = true; };
     let tasks = [{ id: "1", description: "1.1 CLI description", done: true },
       { id: "2", description: "Second description", done: false }];
     let holdFiles = false;
@@ -196,9 +200,9 @@ function hostHtml() {
           const finish = () => unavailableOnRelease
             ? send({ error: { code: "CHANGE_UNAVAILABLE", message: "Change no longer exists." } }, 404)
             : send({ artifactId: body.artifactId, selector: body.selector,
-              content: body.selector === "proposal.md" ? proposal
-                : longSpec && body.selector === "specs/1.md" ? "Long document line\\n".repeat(200)
-                : "Content of " + body.selector });
+              content: documents[body.selector] ?? (body.selector === "proposal.md" ? proposal
+                : longSpec && body.selector === "specs/1.md" ? "Long document line\\n\\n".repeat(200)
+                : "Content of " + body.selector) });
           if (rootErrorPath === path) { rootErrorPath = ""; send({ error: { code: "ROOT_CHANGED", message: "Root changed" } }, 409); return; }
           if (unavailable) send({ error: { code: "CHANGE_UNAVAILABLE", message: "Change no longer exists." } }, 404);
           else if (failDocument && body.selector === "proposal.md") { failDocument = false;
@@ -284,11 +288,11 @@ function hostHtml() {
               { artifactId: "specs:a", selector: "b", label: "b" },
             ] });
            else send({ id: item.id, goal: item.goal, root: currentRoot,
-             artifacts: custom ? [artifacts[0], { id: "checklist", status: "done", outputPath: "checklist.md", requires: ["proposal"] }] :
+              artifacts: custom ? [artifacts[0], { id: "checklist", status: "done", outputPath: customSelector, requires: ["proposal"] }] :
                withDesign ? [artifacts[0], artifacts[1], { id: "design", status: "done", outputPath: "design.md", requires: ["specs"] }, artifacts[2]] : artifacts,
             applyRequires: custom ? ["checklist"] : ["tasks"], documents: [
             { artifactId: "proposal", selector: "proposal.md", label: "proposal.md" },
-            ...(custom ? [{ artifactId: "checklist", selector: "checklist.md", label: "checklist.md" }] : [
+             ...(custom ? [{ artifactId: "checklist", selector: customSelector, label: customSelector }] : [
                ...[1, 2, 3].map((n) => ({ artifactId: "specs", selector: "specs/" + n + ".md", label: "specs/" + n + ".md" })),
                ...(withDesign ? [{ artifactId: "design", selector: "design.md", label: "design.md" }] : []),
               { artifactId: "tasks", selector: "tasks.md", label: "tasks.md" }]),
@@ -345,6 +349,101 @@ async function withPanel(run) {
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
   }
 }
+
+test("Markdown panel links use SDK feedback and unchanged DOM survives sibling reads and themes", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => {
+      __holdFiles();
+      __holdTasks();
+      __document(
+        "proposal.md",
+        "# Proposal\n\n[Web](https://example.com/)\n\n```mermaid\nflowchart LR\n A --> B --> C --> D" +
+          " --> E".repeat(80) +
+          "\n```",
+      );
+      __goal("first-change", "# Literal goal");
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await panel.locator(".document-content pre code").waitFor();
+    await panel.locator(".document-content").evaluate((node) => {
+      window.retainedCode = node.querySelector("pre code");
+      window.retainedHeading = node.querySelector("h1");
+      node.querySelector("a").focus();
+      node.querySelector("pre").scrollLeft = 30;
+    });
+    await page.evaluate(() => {
+      __releaseFile();
+      __releaseFile();
+      __releaseFile();
+      __releaseFile();
+      __theme("light");
+    });
+    await page.waitForFunction(
+      () => __completed.filter((path) => path === "/document").length === 4,
+    );
+    assert.ok(
+      await panel
+        .locator(".document-content")
+        .evaluate(
+          (node) =>
+            node.querySelector("pre code") === retainedCode &&
+            node.querySelector("h1") === retainedHeading &&
+            node.querySelector("a") === document.activeElement &&
+            node.querySelector("pre").scrollLeft === 30,
+        ),
+    );
+    assert.equal(await panel.locator(".goal").textContent(), "# Literal goal");
+    assert.equal(await panel.locator(".goal h1").count(), 0);
+    const reads = await page.evaluate(
+      () => __requests.filter((r) => r.path === "/document").length,
+    );
+    await panel.getByRole("link", { name: "Web" }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "open-url"));
+    await page.evaluate(() => __failOpenUrl());
+    await panel.getByRole("link", { name: "Web" }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/document").length),
+      reads,
+    );
+    assert.equal(
+      await panel.locator("body").evaluate((node) => node.scrollWidth <= innerWidth),
+      true,
+    );
+  });
+});
+
+test("custom Markdown extensions are case insensitive and plain outputs remain literal", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    for (const selector of ["CHECKLIST.MD", "checklist.MarkDown", "checklist.txt"]) {
+      await page.evaluate((selector) => {
+        __customSelector(selector);
+        __document(selector, "# Custom heading\n\n- [x] Read only");
+      }, selector);
+      await panel.getByRole("button", { name: "refresh", exact: true }).click();
+      await panel.getByRole("button", { name: "first-change", exact: true }).click();
+      await panel.getByRole("tab", { name: /checklist/ }).click();
+      await panel.getByText("Custom heading", { exact: false }).waitFor();
+      assert.equal(
+        await panel.locator(".document-content h1").count(),
+        selector.endsWith("txt") ? 0 : 1,
+      );
+      await panel.getByRole("tab", { name: /Tasks/ }).click();
+      await panel.getByText("1.1 CLI description").waitFor();
+      assert.equal(await panel.locator(".task-row h1").count(), 0);
+      await panel.getByRole("button", { name: "Back to changes" }).click();
+    }
+  });
+});
 
 test("affected areas are neutral literal read-only badges on cards and detail", async () => {
   await withPanel(async (browser, url) => {
@@ -1133,7 +1232,15 @@ test("document loading is status text, then content replaces it; failures show o
     assert.equal(await panel.locator(".detail-content p:visible").count(), 1);
     await page.evaluate(() => __releaseFile());
     await panel.getByText("First version of proposal").waitFor();
-    assert.equal(await panel.locator(".detail-content p:visible").count(), 0);
+    assert.equal(
+      await panel
+        .locator(
+          ".detail-content .document-status:visible, .detail-content .document-issue:visible",
+        )
+        .count(),
+      0,
+    );
+    assert.equal(await panel.locator(".document-content p:visible").count(), 1);
     await panel.getByRole("button", { name: "Back to changes" }).click();
     await page.evaluate(() => __failDocument());
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
@@ -1237,7 +1344,7 @@ test("creation and detail use named dialogue, one main landmark and unique docum
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByRole("tab", { name: /Specs/ }).click();
     assert.equal(await panel.getByRole("main").count(), 1);
-    assert.equal(await panel.locator(".detail-content details pre").count(), 3);
+    assert.equal(await panel.locator(".detail-content details .document-content").count(), 3);
     assert.equal(await panel.locator("[id=document-content]").count(), 0);
     assert.equal(await panel.locator("[role=tabpanel][aria-labelledby]").count(), 1);
     await page.close();
@@ -2823,8 +2930,9 @@ test("collapsed Specs completion never moves an expanded sibling's reading posit
     const first = panel.locator("details").filter({ hasText: "specs/1.md" });
     await first.locator("summary").click();
     await first
-      .locator("pre")
+      .locator(".document-content")
       .getByText(/Long document line/)
+      .first()
       .waitFor();
     const content = panel.locator(".detail-content");
     await content.evaluate((node) => (node.scrollTop = 200));

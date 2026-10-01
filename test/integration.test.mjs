@@ -15,7 +15,11 @@ async function listen(server) {
 test("compiled panel reads and creates through the real local service and temporary OpenSpec project", async (t) => {
   await withProjects(async (directory) => {
     const change = "integration-change";
-    await fixtureChange(directory, change, "Integration proposal content");
+    await fixtureChange(
+      directory,
+      change,
+      "# Integration proposal content\n\nA **real** planning document.\n\n```mermaid\nflowchart LR\n Read --> Plan --> Apply\n```\n",
+    );
     const changeDir = join(directory, "openspec", "changes", change);
     const metadataPath = join(changeDir, ".openspec.yaml");
     const metadata = await readFile(metadataPath, "utf8");
@@ -131,14 +135,19 @@ test("compiled panel reads and creates through the real local service and tempor
         ["auth", "api", "auth"],
       );
       await panelFrame
-        .locator(".detail-content pre")
-        .getByText("Integration proposal content")
+        .getByRole("heading", { name: "Integration proposal content" })
         .waitFor({ timeout: 30000 });
+      assert.equal(
+        await panelFrame.locator(".document-content pre code").textContent(),
+        "flowchart LR\n Read --> Plan --> Apply",
+      );
+      assert.equal(await panelFrame.locator(".document-content svg").count(), 0);
+      assert.equal(await panelFrame.locator(".document-content strong").textContent(), "real");
       await page.waitForFunction(() =>
         window.__requests.some((item) => item.body?.selector === "design.md"),
       );
       await panelFrame.getByRole("tab", { name: /Design · Written/ }).click();
-      await panelFrame.getByText("# Integration design").waitFor();
+      await panelFrame.getByRole("heading", { name: "Integration design" }).waitFor();
       const initial = await page.evaluate(() => window.__requests.map((item) => item.path));
       assert.deepEqual(initial.slice(0, 2), ["/changes", "/summary"]);
       assert.equal(initial.filter((path) => path === "/document").length, 4);
@@ -173,7 +182,7 @@ test("compiled panel reads and creates through the real local service and tempor
         .locator(".detail-content details summary")
         .getByText("specs/first/spec.md")
         .click();
-      await panelFrame.getByText("# first integration document").waitFor();
+      await panelFrame.getByRole("heading", { name: "first integration document" }).waitFor();
       assert.deepEqual(
         await page.evaluate(() => window.__requests.map((item) => item.path)),
         initial,
@@ -182,12 +191,12 @@ test("compiled panel reads and creates through the real local service and tempor
         .locator(".detail-content details summary")
         .getByText("specs/second/spec.md")
         .click();
-      await panelFrame.getByText("# second integration document").waitFor();
+      await panelFrame.getByRole("heading", { name: "second integration document" }).waitFor();
       await panelFrame
         .locator(".detail-content details summary")
         .getByText("specs/first/spec.md")
         .click();
-      await panelFrame.getByText("# first integration document").waitFor();
+      await panelFrame.getByRole("heading", { name: "first integration document" }).waitFor();
       const warmReads = await page.evaluate(
         () =>
           window.__requests.filter(
@@ -204,8 +213,11 @@ test("compiled panel reads and creates through the real local service and tempor
           .querySelector("iframe")
           .contentDocument.dispatchEvent(new Event("visibilitychange")),
       );
-      assert.equal(await panelFrame.getByText("# Edited integration document").count(), 0);
-      await panelFrame.getByText("# first integration document").waitFor();
+      assert.equal(
+        await panelFrame.getByRole("heading", { name: "Edited integration document" }).count(),
+        0,
+      );
+      await panelFrame.getByRole("heading", { name: "first integration document" }).waitFor();
       await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
       await writeFile(
         join(changeDir, "tasks.md"),
@@ -237,7 +249,9 @@ test("compiled panel reads and creates through the real local service and tempor
         .locator(".detail-content details summary")
         .getByText("specs/first/spec.md")
         .click();
-      await panelFrame.getByText("# Edited integration document").waitFor({ timeout: 30000 });
+      await panelFrame
+        .getByRole("heading", { name: "Edited integration document" })
+        .waitFor({ timeout: 30000 });
       await setAreas([]);
       await panelFrame.getByRole("button", { name: "refresh", exact: true }).click();
       await panelFrame

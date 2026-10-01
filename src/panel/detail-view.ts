@@ -7,6 +7,7 @@ import { mountTasksView } from "./tasks-view.js";
 import { stageLabel, workflowLabel } from "./workflow.js";
 import { addButtonIcon } from "./button-icon.js";
 import { mountAreaBadges } from "./area-badges.js";
+import { documentFormat } from "./document-renderer.js";
 
 export type DetailState = {
   change: DerivedChange;
@@ -55,6 +56,7 @@ export function mountDetailView(
     action: (intent: "primary" | "verify" | "explore") => void;
     delete: () => void;
     refresh: () => void;
+    openUrl: (url: string) => void;
   },
 ) {
   const shell = document.createElement("section");
@@ -233,7 +235,7 @@ export function mountDetailView(
       status.className = "document-status";
       summary.append(path, status);
       const body = document.createElement("div");
-      const view = mountDocumentView(body);
+      const view = mountDocumentView(body, { openUrl: callbacks.openUrl });
       node.append(summary, body);
       node.addEventListener("toggle", () => {
         if (node.open)
@@ -381,6 +383,7 @@ export function mountDetailView(
         const current = state.files.get(key);
         entry.view.update({
           text: current?.value ?? "",
+          format: documentFormat(descriptor.selector),
           hasContent: current?.value !== null && !!current,
           status:
             !state.unavailable && !current?.error && current?.value == null
