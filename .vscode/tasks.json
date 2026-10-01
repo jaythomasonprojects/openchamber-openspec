@@ -2,6 +2,12 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Setup: worktree",
+      "type": "shell",
+      "command": "uv run --no-project scripts/setup_worktree.py",
+      "problemMatcher": []
+    },
+    {
       "label": "Lint: check",
       "type": "shell",
       "command": "npm run lint && npm run format:check && npm run typecheck",

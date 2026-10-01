@@ -12,8 +12,8 @@
     "check": "npm run lint && npm run format:check && npm run typecheck && npm test && npm run build",
     "lint": "eslint src eslint.config.mjs",
     "lint:fix": "eslint src eslint.config.mjs --fix",
-    "format:check": "prettier --check src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .zed/tasks.json .vscode/tasks.json",
-    "format": "prettier --write src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .zed/tasks.json .vscode/tasks.json",
+    "format:check": "prettier --check src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
+    "format": "prettier --write src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
     "typecheck": "tsc --noEmit",
     "test": "npm run build:panel && npm run build:service && npm run build:model:test && npm run build:resources:test && node --test test/*.test.mjs",
     "clean": "node -e \"for (const file of ['panel/main.js', 'service/main.js']) require('node:fs').rmSync(file, { force: true })\""
