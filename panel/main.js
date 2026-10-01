@@ -2140,7 +2140,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       entry.current = item;
       const change = item.change;
       if (entry.title.textContent !== change.id) entry.title.textContent = change.id;
-      const label = `${change.completedArtifacts}/${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " \xB7 No tasks yet" : ""}`;
+      const label = `${change.completedArtifacts} of ${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " \xB7 No tasks yet" : ""}`;
       if (entry.progressLabel.textContent !== label) entry.progressLabel.textContent = label;
       entry.progressRoot.hidden = !change.totalTasks;
       entry.progress.update({
@@ -2172,7 +2172,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           searchValue = state.search;
           search.update({ value: searchValue });
         }
-        tally.textContent = `${state.listedCount} changes \xB7 ${state.completedTasks}/${state.totalTasks} tasks complete`;
+        tally.textContent = `${state.listedCount} changes \xB7 ${state.completedTasks} of ${state.totalTasks} tasks complete`;
         refresh.update({ disabled: !state.directory, loading: state.loading });
         const nextNoticeSignature = JSON.stringify([
           !!state.directory,
@@ -2335,7 +2335,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         progressRoot.hidden = !tasks.length;
         progress.update({
           value: tasks.length ? Math.round(completed / tasks.length * 100) : 0,
-          label: tasks.length ? `${completed}/${tasks.length} tasks complete` : "Task completion"
+          label: tasks.length ? `${completed} of ${tasks.length} tasks complete` : "Task completion"
         });
         issue.textContent = retryable ? state?.error?.message ?? "" : "";
         issue.hidden = !issue.textContent;
@@ -3324,12 +3324,17 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       const target = `OpenSpec change "${change.id}"`;
       const goal = change.goal?.trim() ? `
 Goal: ${change.goal}` : "";
-      if (intent === "explore") return `/openspec-explore ${change.id}${goal}`;
+      if (intent === "explore")
+        return `/openspec-explore ${change.id}${goal}
+
+Investigate the goal, relevant code, options and trade-offs for ${target}. Discuss findings without file changes or implementation. If no goal is recorded, inspect existing context and ask the user to clarify it if necessary; do not invent a goal.`;
       if (change.stage === "planning")
-        return `/openspec-propose ${change.id} (existing change)${goal}`;
+        return `/openspec-propose ${change.id} (existing change)${goal}
+
+Inspect ${target}'s status and current metadata. Preserve existing decisions and any recorded goal; only if current metadata has no goal, establish and record a concise goal from existing change context. Ask the user for clarification if the goal is unclear. Finish planning this existing scaffold and complete missing planning artefacts using OpenSpec's artefact instructions. Do not create another change or implement code. If the skill requires new-change creation, explain the conflict rather than creating another change.`;
       if (change.stage === "ready" || change.stage === "progress") {
         const progress = change.stage === "progress" ? `
-${change.completedTasks}/${change.totalTasks} tasks complete. Pick up where implementation left off and complete the remaining tasks.` : "";
+${change.completedTasks} of ${change.totalTasks} tasks complete. Pick up where implementation left off and complete the remaining tasks.` : "";
         return `/openspec-apply-change ${change.id}${progress}
 
 Complete all remaining tasks in ${target}, then verify the implementation against its change artefacts. Resolve any issues found and verify again until all tasks are complete and verification passes. If blocked, report the blocker rather than marking unfinished work complete.`;

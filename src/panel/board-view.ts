@@ -193,7 +193,7 @@ export function mountBoardView(
     entry.current = item;
     const change = item.change;
     if (entry.title.textContent !== change.id) entry.title.textContent = change.id;
-    const label = `${change.completedArtifacts}/${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " · No tasks yet" : ""}`;
+    const label = `${change.completedArtifacts} of ${change.totalArtifacts} artefacts${change.totalTasks === 0 ? " · No tasks yet" : ""}`;
     if (entry.progressLabel.textContent !== label) entry.progressLabel.textContent = label;
     entry.progressRoot.hidden = !change.totalTasks;
     entry.progress.update({
@@ -226,7 +226,7 @@ export function mountBoardView(
         searchValue = state.search;
         search.update({ value: searchValue });
       }
-      tally.textContent = `${state.listedCount} changes · ${state.completedTasks}/${state.totalTasks} tasks complete`;
+      tally.textContent = `${state.listedCount} changes · ${state.completedTasks} of ${state.totalTasks} tasks complete`;
       refresh.update({ disabled: !state.directory, loading: state.loading });
       const nextNoticeSignature = JSON.stringify([
         !!state.directory,

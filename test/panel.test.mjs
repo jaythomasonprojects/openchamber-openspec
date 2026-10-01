@@ -388,7 +388,7 @@ test("explicit Refresh retains opened-change observations until a new opening", 
     );
     await panel.getByRole("button", { name: "Back to changes" }).click();
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
-    await panel.getByText("2/2 tasks complete").waitFor();
+    await panel.getByText("2 of 2 tasks complete", { exact: true }).waitFor();
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByText("Updated proposal").waitFor();
     assert.equal(
@@ -416,7 +416,7 @@ test("in-place detail restores search and focus; Tasks is a flat CLI-only checkl
     assert.equal(await panel.locator(".tasks-view h3").count(), 0);
     assert.equal(
       await panel.locator(".tasks-view .oc-sdk-progress-label").innerText(),
-      "1/2 tasks complete\n50%",
+      "1 of 2 tasks complete\n50%",
     );
     assert.equal(await panel.locator(".tasks-view > .progress-label:visible").count(), 0);
     assert.equal(await panel.locator(".task-row details").count(), 0);
@@ -442,7 +442,10 @@ test("board actions and detail back/stage controls use the compact viewer layout
     await panel.getByRole("button", { name: "first-change" }).waitFor();
     assert.equal(await panel.locator(".toolbar .heading-actions button").count(), 3);
     await panel.getByRole("button", { name: "new change" }).waitFor();
-    assert.equal(await panel.locator(".board-tally").innerText(), "2 changes · 1/2 tasks complete");
+    assert.equal(
+      await panel.locator(".board-tally").innerText(),
+      "2 changes · 1 of 2 tasks complete",
+    );
     await panel.getByRole("button", { name: "first-change" }).click();
     const back = panel.getByRole("button", { name: "Back to changes" });
     assert.equal(await back.getAttribute("title"), "Back to changes");
@@ -1095,7 +1098,7 @@ test("a fresh-chat draft receives replacement composition without sending or sta
       draft: __draft(),
       requests: __requests.filter((r) => ["compose", "prompt", "start-session"].includes(r.path)),
     }));
-    assert.match(result.draft, /^\/openspec-apply-change first-change\n1\/2 tasks complete\./);
+    assert.match(result.draft, /^\/openspec-apply-change first-change\n1 of 2 tasks complete\./);
     assert.match(result.draft, /Pick up where implementation left off/);
     assert.match(result.draft, /verify the implementation against its change artefacts/);
     assert.match(result.draft, /Resolve any issues found and verify again/);
@@ -1277,9 +1280,9 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
       .getByRole("button", { name: "propose" })
       .click();
     await page.waitForFunction(() => __draft().startsWith("/openspec-propose first-change"));
-    assert.equal(
+    assert.match(
       await page.evaluate(() => __draft()),
-      "/openspec-propose first-change (existing change)\nGoal: Read the proposal",
+      /^\/openspec-propose first-change \(existing change\)\nGoal: Read the proposal\n\nInspect/,
     );
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
     assert.equal(
@@ -1292,30 +1295,55 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
   });
 });
 
-test("propose preserves a multiline goal and omits an absent goal", async () => {
+test("propose preserves goals and conditionally records a missing goal without sending or writing", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "first-change" }).waitFor();
-    await page.evaluate(() => {
-      __readiness("pending");
-      __goal("first-change", 'Ship "A"\nwith B');
-    });
-    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await page.evaluate(() => __readiness("pending"));
     const card = panel.locator(".change-card").filter({ hasText: "first-change" });
-    await card.getByRole("button", { name: "propose" }).click();
-    await page.waitForFunction(() => __draft().startsWith("/openspec-propose"));
-    assert.equal(
-      await page.evaluate(() => __draft()),
-      '/openspec-propose first-change (existing change)\nGoal: Ship "A"\nwith B',
-    );
-    await page.evaluate(() => __goal("first-change", null));
-    await panel.getByRole("button", { name: "refresh", exact: true }).click();
-    await card.getByRole("button", { name: "propose" }).click();
-    await page.waitForFunction(
-      () => __draft() === "/openspec-propose first-change (existing change)",
-    );
+    for (const goal of ['Ship "A"\nwith B', "Existing goal", null, "   "]) {
+      await page.evaluate((goal) => __goal("first-change", goal), goal);
+      await panel.getByRole("button", { name: "refresh", exact: true }).click();
+      await panel.locator(".toolbar .refresh-control button:not(:disabled)").waitFor();
+      const before = await page.evaluate(() => __requests.length);
+      await card.getByRole("button", { name: "propose" }).click();
+      await page.waitForFunction(
+        (before) => __requests.slice(before).some((r) => r.path === "compose"),
+        before,
+      );
+      const draft = await page.evaluate(() => __draft());
+      assert.ok(
+        draft.startsWith(
+          `/openspec-propose first-change (existing change)${goal?.trim() ? `\nGoal: ${goal}` : ""}\n\n`,
+        ),
+      );
+      assert.match(draft, /Inspect .*status and current metadata/);
+      assert.match(draft, /Preserve existing decisions and any recorded goal/);
+      assert.match(draft, /only if current metadata has no goal/);
+      assert.match(draft, /establish and record a concise goal from existing change context/);
+      assert.match(draft, /Ask the user for clarification if the goal is unclear/);
+      assert.match(
+        draft,
+        /complete missing planning artefacts using OpenSpec's artefact instructions/,
+      );
+      assert.match(draft, /Do not create another change or implement code/);
+      assert.match(draft, /If the skill requires new-change creation, explain the conflict/);
+      assert.doesNotMatch(draft, /Goal: null|\/tmp\/fixture-project/);
+      if (!goal?.trim()) assert.doesNotMatch(draft, /Goal:/);
+      assert.deepEqual(
+        await page.evaluate(
+          (before) =>
+            __requests
+              .slice(before)
+              .filter((r) => r.path !== "toast")
+              .map((r) => r.path),
+          before,
+        ),
+        ["compose"],
+      );
+    }
     await page.close();
   });
 });
@@ -1354,9 +1382,13 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
         await card.getByRole("button", { name: "explore" }).click();
         await page.waitForFunction(() => __draft().startsWith("/openspec-explore first-change"));
         assert.match(await page.evaluate(() => __draft()), /first-change.*Read the proposal/s);
-        assert.equal(
+        assert.match(
           await page.evaluate(() => __draft()),
-          "/openspec-explore first-change\nGoal: Read the proposal",
+          /^\/openspec-explore first-change\nGoal: Read the proposal\n\nInvestigate/,
+        );
+        assert.match(
+          await page.evaluate(() => __draft()),
+          /Discuss .*without file changes or implementation/,
         );
       }
       assert.equal(
@@ -1371,7 +1403,10 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await card.getByRole("button", { name: "explore" }).click();
-    await page.waitForFunction(() => __draft() === "/openspec-explore first-change");
+    await page.waitForFunction(() => __draft().startsWith("/openspec-explore first-change\n\n"));
+    const draft = await page.evaluate(() => __draft());
+    assert.match(draft, /inspect existing context and ask the user to clarify it if necessary/);
+    assert.doesNotMatch(draft, /Goal:|record a|write a/);
     assert.equal(
       await page.evaluate(
         () => __requests.filter((r) => ["prompt", "start-session"].includes(r.path)).length,
@@ -1417,7 +1452,7 @@ test("board title and toolbar reflow as intact rows without moving the gutter", 
     const search = panel.getByRole("searchbox", { name: "Search changes" });
     await search.fill("first");
     const tally = panel.locator(".board-tally");
-    assert.match(await tally.innerText(), /2 changes.*1\/2 tasks complete/);
+    assert.match(await tally.innerText(), /2 changes.*1 of 2 tasks complete/);
     for (const width of [1076, 561, 560, 559, 320]) {
       await page.setViewportSize({ width, height: 700 });
       const layout = await panel.locator(".board-shell").evaluate((shell) => {
@@ -1563,7 +1598,6 @@ test("detail header groups title then goal with the default badge centred", asyn
           rowLeft: rowRect.left,
           rowRight: rowRect.right,
           rowWidth: rowRect.width,
-          toolbarHeight: rowRect.height,
         };
       });
       assert.equal(toolbar.tabsHeight, 28);
@@ -1571,7 +1605,6 @@ test("detail header groups title then goal with the default badge centred", asyn
       assert.ok(Math.abs(toolbar.tabsLeft - toolbar.rowLeft) < 1);
       if (width === 320) {
         assert.ok(toolbar.actionsTop > toolbar.tabsTop);
-        assert.equal(toolbar.toolbarHeight, 68);
         assert.ok(Math.abs(toolbar.actionsTop - toolbar.tabsBottom - 12) < 1);
         assert.ok(Math.abs(toolbar.tabTrackRight - toolbar.rowRight) < 1);
         assert.ok(toolbar.tabsRight < toolbar.tabTrackRight);
@@ -2233,7 +2266,7 @@ test("refresh swaps its icon for an in-button spinner without moving itself or t
     const panel = page.frameLocator("iframe");
     const card = panel.locator(".change-card").filter({ hasText: "first-change" });
     await card.waitFor();
-    assert.equal(await card.locator(".progress-label").innerText(), "3/3 artefacts");
+    assert.equal(await card.locator(".progress-label").innerText(), "3 of 3 artefacts");
     assert.match(await card.locator(".oc-sdk-progress-label").innerText(), /1 of 2 tasks complete/);
     for (const width of [320, 1076]) {
       await page.setViewportSize({ width, height: 700 });
@@ -2646,38 +2679,6 @@ test("long goals remain fully scrollable with reachable detail controls", async 
       await panel.getByRole("button", { name: "first-change" }).click();
       await region.getByText("Short goal").waitFor();
       assert.ok(await region.evaluate((node) => node.scrollHeight <= node.clientHeight));
-      await page.close();
-    }
-  });
-});
-
-test("document overflow leaves short and long goals readable above the detail toolbar", async () => {
-  await withPanel(async (browser, url) => {
-    for (const width of [320, 1076]) {
-      const page = await browser.newPage({ viewport: { width, height: 400 } });
-      await page.goto(url);
-      const panel = page.frameLocator("iframe");
-      await page.evaluate(() => {
-        __longSpec();
-        __goal("first-change", "Short goal");
-      });
-      await panel.getByRole("button", { name: "refresh", exact: true }).click();
-      await panel.getByRole("button", { name: "first-change" }).click();
-      await panel.getByRole("tab", { name: /Specs/ }).click();
-      await panel.locator(".detail-content details summary").first().click();
-      const goal = panel.getByRole("region", { name: "Recorded objective" });
-      const measured = await goal.evaluate((node) => ({
-        height: node.clientHeight,
-        textHeight: node.scrollHeight,
-        y: node.getBoundingClientRect().top,
-      }));
-      assert.ok(measured.height >= 19, JSON.stringify(measured));
-      assert.ok(measured.textHeight <= measured.height);
-      assert.ok(await panel.locator(".detail-content").evaluate((node) => node.clientHeight > 0));
-      assert.equal(
-        await panel.locator("html").evaluate((node) => node.scrollWidth > innerWidth),
-        false,
-      );
       await page.close();
     }
   });

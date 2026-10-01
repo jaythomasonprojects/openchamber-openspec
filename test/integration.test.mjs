@@ -198,10 +198,13 @@ test("compiled panel reads and creates through the real local service and tempor
         join(changeDir, "tasks.md"),
         "# Tasks\n\n## Delivery\n\n- [x] 1.1 Review integrated view\n      Updated source continuation.\n",
       );
-      assert.equal(await panelFrame.getByText("1/1 tasks complete").count(), 0);
+      assert.equal(await panelFrame.getByText("1 of 1 tasks complete", { exact: true }).count(), 0);
       await panelFrame.getByRole("button", { name: "Back to changes" }).click();
       await panelFrame.getByRole("button", { name: "refresh", exact: true }).click();
-      await panelFrame.getByText("1/1 tasks complete").first().waitFor({ timeout: 30000 });
+      await panelFrame
+        .getByText("1 of 1 tasks complete", { exact: true })
+        .first()
+        .waitFor({ timeout: 30000 });
       await panelFrame.getByRole("button", { name: change }).click();
       await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
       await panelFrame.getByText(/1.1 Review integrated view/).waitFor();
@@ -246,9 +249,9 @@ test("compiled panel reads and creates through the real local service and tempor
         .click();
       await page.waitForFunction(() => window.__compose?.text?.includes("created-in-fixture"));
       assert.equal(await page.evaluate(() => window.__compose.mode), "replace");
-      assert.equal(
+      assert.match(
         await page.evaluate(() => window.__compose.text),
-        "/openspec-propose created-in-fixture (existing change)\nGoal: Fixture creation goal",
+        /^\/openspec-propose created-in-fixture \(existing change\)\nGoal: Fixture creation goal\n\nInspect/,
       );
       await panelFrame.getByRole("button", { name: "created-in-fixture" }).click();
       await panelFrame

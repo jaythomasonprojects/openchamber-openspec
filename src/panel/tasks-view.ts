@@ -39,7 +39,7 @@ export function mountTasksView(root: HTMLElement, retryRead: () => void) {
       progressRoot.hidden = !tasks.length;
       progress.update({
         value: tasks.length ? Math.round((completed / tasks.length) * 100) : 0,
-        label: tasks.length ? `${completed}/${tasks.length} tasks complete` : "Task completion",
+        label: tasks.length ? `${completed} of ${tasks.length} tasks complete` : "Task completion",
       });
       issue.textContent = retryable ? (state?.error?.message ?? "") : "";
       issue.hidden = !issue.textContent;
