@@ -15,6 +15,8 @@ export type BoardCard = {
 export type BoardState = {
   directory: string | null;
   canCreate: boolean;
+  canArchive: boolean;
+  archivePending: boolean;
   search: string;
   listedCount: number;
   completedTasks: number;
@@ -31,6 +33,7 @@ export function mountBoardView(
   root: HTMLElement,
   callbacks: {
     create: () => void;
+    archive: () => void;
     retry: () => void;
     search: (value: string) => void;
     help: () => void;
@@ -56,6 +59,15 @@ export function mountBoardView(
     onClick: callbacks.create,
   });
   addButtonIcon(newChangeRoot, "create");
+  const archiveRoot = document.createElement("span");
+  const archive = mountButton(archiveRoot, {
+    label: "archive all",
+    variant: "secondary",
+    size: "sm",
+    disabled: true,
+    onClick: callbacks.archive,
+  });
+  addButtonIcon(archiveRoot, "archive");
   const toolbar = document.createElement("div");
   toolbar.className = "toolbar";
   const tally = document.createElement("span");
@@ -73,7 +85,7 @@ export function mountBoardView(
   addButtonIcon(refreshRoot, "refresh");
   const helpRoot = document.createElement("span");
   const help = mountHelpButton(helpRoot, callbacks.help);
-  headingActions.append(helpRoot, refreshRoot, newChangeRoot);
+  headingActions.append(helpRoot, refreshRoot, archiveRoot, newChangeRoot);
   const searchRoot = document.createElement("span");
   searchRoot.className = "board-search";
   let searchValue = "";
@@ -228,6 +240,7 @@ export function mountBoardView(
       project.textContent =
         state.directory?.split("/").filter(Boolean).at(-1) ?? "No project selected";
       newChange.update({ disabled: !state.canCreate });
+      archive.update({ disabled: !state.canArchive, loading: state.archivePending });
       if (searchValue !== state.search) {
         searchValue = state.search;
         search.update({ value: searchValue });
@@ -329,6 +342,7 @@ export function mountBoardView(
       }
       cards.clear();
       newChange.dispose();
+      archive.dispose();
       refresh.dispose();
       help.dispose();
       search.dispose();

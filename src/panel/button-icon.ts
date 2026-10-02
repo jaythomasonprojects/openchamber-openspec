@@ -1,6 +1,8 @@
 const paths = {
   refresh: "M20 11a8 8 0 1 1-2.4-5.7M20 4v5h-5",
   create: "M12 5v14M5 12h14",
+  copy: "M9 9h11v11H9zM15 9V4H4v11h5",
+  archive: "M3 4h18v4H3zM5 8v12h14V8M10 12h4",
   delete: "M4 7h16M10 4h4m4 3-1 13H7L6 7m4 4v5m4-5v5",
 } as const;
 

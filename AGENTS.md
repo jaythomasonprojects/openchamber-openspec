@@ -41,6 +41,9 @@
 
 - Load the board on initial/context loads and explicit Refresh. Do not add polling, visibility
   revalidation, TTL, or board-wide document prefetch.
+- Board loads use one `list` and one `status --all` invocation through `/changes` and `/summaries`.
+  Successful detail reads use one invocation for Tasks and one per document (1 + D total). Verify
+  read roots from each command's output; keep mutation context checks unchanged.
 - Opening detail starts CLI Tasks beside the first document group. Standard groups load Proposal,
   all Specs concurrently, then Design; custom groups follow declared order. Tab selection must not
   initiate requests.

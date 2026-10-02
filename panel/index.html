@@ -68,6 +68,8 @@
       }
       .heading-actions {
         display: inline-flex;
+        flex-wrap: wrap;
+        max-width: 100%;
         align-items: center;
         flex: none;
         gap: 8px;
@@ -266,7 +268,14 @@
       .detail-title-group {
         flex: 1 1 0;
         min-width: 0;
-        flex-wrap: wrap;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .detail-name-group {
+        display: flex;
+        align-items: center;
+        min-width: 0;
         gap: 8px;
       }
       .detail-title-group h1 {
@@ -274,6 +283,21 @@
         min-height: 28px;
         display: inline-flex;
         align-items: center;
+      }
+      .detail-copy {
+        flex: none;
+      }
+      .detail-copy .oc-sdk-btn {
+        width: 28px;
+        padding: 0;
+      }
+      .detail-copy .oc-sdk-btn > span {
+        display: none;
+      }
+      .detail-copy .oc-sdk-btn > svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
       }
       .detail-toolbar {
         display: flex;
@@ -525,6 +549,7 @@
         font-size: 16px;
       }
       dialog .create-actions,
+      dialog .archive-actions,
       dialog .delete-actions {
         display: flex;
         gap: 8px;

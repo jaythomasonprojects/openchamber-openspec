@@ -125,6 +125,7 @@ test("compiled panel reads and creates through the real local service and tempor
       await page.goto(hostUrl, { waitUntil: "networkidle" });
       const panelFrame = page.frameLocator('iframe[title="OpenSpec integration panel"]');
       await panelFrame.getByRole("button", { name: change }).waitFor({ timeout: 30000 });
+      assert.deepEqual(cliCalls, ["list", "status"], "board load uses two CLI processes");
       assert.deepEqual(
         await panelFrame.locator(".change-card .affected-areas .oc-sdk-badge").allTextContents(),
         ["auth", "api", "auth"],
@@ -149,9 +150,12 @@ test("compiled panel reads and creates through the real local service and tempor
       await panelFrame.getByRole("tab", { name: /Design · Written/ }).click();
       await panelFrame.getByRole("heading", { name: "Integration design" }).waitFor();
       const initial = await page.evaluate(() => window.__requests.map((item) => item.path));
-      assert.deepEqual(initial.slice(0, 2), ["/changes", "/summary"]);
+      assert.deepEqual(initial.slice(0, 2), ["/changes", "/summaries"]);
       assert.equal(initial.filter((path) => path === "/document").length, 4);
       assert.equal(initial.filter((path) => path === "/tasks").length, 1);
+      assert.equal(cliCalls.length, 7, "board uses 2 processes; detail uses 1 + 4 documents");
+      assert.equal(cliCalls.filter((command) => command === "instructions").length, 1);
+      assert.equal(cliCalls.filter((command) => command === "context").length, 0);
       assert.equal(
         await page.evaluate(
           () =>
@@ -279,7 +283,7 @@ test("compiled panel reads and creates through the real local service and tempor
         false,
       );
       await panelFrame.getByRole("button", { name: "new change" }).click();
-      await panelFrame.getByLabel("Change name").fill("created-in-fixture");
+      await panelFrame.getByLabel("Change name", { exact: true }).fill("created-in-fixture");
       await panelFrame.getByLabel("Goal").fill("Fixture creation goal");
       await panelFrame.getByRole("button", { name: "create", exact: true }).click();
       await panelFrame

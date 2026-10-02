@@ -7,6 +7,8 @@ import { mountBoardView } from "./board-view.js";
 import { mountDetailView, taskArtifact } from "./detail-view.js";
 import { mountCreateDialog } from "./create-dialog.js";
 import { mountDeleteDialog } from "./delete-dialog.js";
+import { mountArchiveDialog } from "./archive-dialog.js";
+import { archiveAllPrompt } from "./archive-prompt.js";
 
 export function mountController(host: HostClient, appRoot: HTMLElement): () => void {
   const client = createClient(host);
@@ -45,6 +47,8 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   let detailOpening = 0;
   let readGeneration = 0;
   let boardScroll = 0;
+  let archivePending = false;
+  let disposed = false;
 
   function invalidate() {
     epoch++;
@@ -143,86 +147,74 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
         pendingSummaries = listedCount;
         settled = true;
         render();
-        let next = 0;
-        async function worker() {
-          while (
-            next < listing.changes.length &&
-            epoch === startingEpoch &&
-            scope === current &&
-            operation === boardOperation
-          ) {
-            const entry = listing.changes[next++];
-            try {
-              const summary = await client.summary(current, entry);
-              if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
-                return;
-              const derived = deriveChange(summary);
-              changes = [...changes.filter((item) => item.id !== derived.id), derived].sort(
-                (a, b) => a.id.localeCompare(b.id),
-              );
-              unavailableIds.delete(derived.id);
-              if (selectedChange?.id === derived.id) {
-                selectedChange = derived;
-                if (refresh) {
-                  const owner = taskArtifact(derived);
-                  const valid = derived.artifacts.some(
-                    (item) => item.id === (activeView === "tasks" ? owner : selectedArtifact),
+        const summaries = await client.summaries(current, listing.changes);
+        if (epoch !== startingEpoch || scope !== current || operation !== boardOperation) return;
+        for (const entry of summaries) {
+          try {
+            if ("error" in entry) throw entry.error;
+            const summary = entry.summary;
+            if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
+              return;
+            const derived = deriveChange(summary);
+            changes = [...changes.filter((item) => item.id !== derived.id), derived].sort((a, b) =>
+              a.id.localeCompare(b.id),
+            );
+            unavailableIds.delete(derived.id);
+            if (selectedChange?.id === derived.id) {
+              selectedChange = derived;
+              if (refresh) {
+                const owner = taskArtifact(derived);
+                const valid = derived.artifacts.some(
+                  (item) => item.id === (activeView === "tasks" ? owner : selectedArtifact),
+                );
+                if (!valid) {
+                  const first = derived.artifacts.find(
+                    (item) =>
+                      item.id !== owner &&
+                      derived.documents?.some((document) => document.artifactId === item.id),
                   );
-                  if (!valid) {
-                    const first = derived.artifacts.find(
-                      (item) =>
-                        item.id !== owner &&
-                        derived.documents?.some((document) => document.artifactId === item.id),
-                    );
-                    selectedArtifact = first?.id ?? derived.artifacts[0]?.id ?? "";
-                    activeView =
-                      selectedArtifact === owner || !selectedArtifact ? "tasks" : "document";
-                  }
-                  startContent(derived);
+                  selectedArtifact = first?.id ?? derived.artifacts[0]?.id ?? "";
+                  activeView =
+                    selectedArtifact === owner || !selectedArtifact ? "tasks" : "document";
                 }
-              }
-              staleIds.delete(derived.id);
-              failures = failures.filter((item) => item.id !== derived.id);
-              if (
-                pendingInspection?.scope === current &&
-                pendingInspection.epoch === epoch &&
-                operation >= pendingInspection.minOperation &&
-                pendingInspection.name === derived.id
-              ) {
-                pendingInspection = null;
-                openDetail(derived, current, epoch);
-              }
-            } catch (caught) {
-              if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
-                return;
-              if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
-                invalidate();
-                loadBoard();
-                return;
-              }
-              failures = [
-                ...failures.filter((item) => item.id !== entry.id),
-                {
-                  id: entry.id,
-                  error: caught instanceof Error ? caught.message : "Change could not be read.",
-                },
-              ];
-              if (changes.some((item) => item.id === entry.id)) staleIds.add(entry.id);
-              if (caught instanceof ServiceRequestError && caught.code === "CHANGE_UNAVAILABLE")
-                unavailableIds.add(entry.id);
-              if (pendingInspection?.scope === current && pendingInspection.name === entry.id)
-                pendingInspection = null;
-            } finally {
-              if (epoch === startingEpoch && scope === current && operation === boardOperation) {
-                pendingSummaries--;
-                render();
+                startContent(derived);
               }
             }
+            staleIds.delete(derived.id);
+            failures = failures.filter((item) => item.id !== derived.id);
+            if (
+              pendingInspection?.scope === current &&
+              pendingInspection.epoch === epoch &&
+              operation >= pendingInspection.minOperation &&
+              pendingInspection.name === derived.id
+            ) {
+              pendingInspection = null;
+              openDetail(derived, current, epoch);
+            }
+          } catch (caught) {
+            if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
+              return;
+            if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
+              invalidate();
+              loadBoard();
+              return;
+            }
+            failures = [
+              ...failures.filter((item) => item.id !== entry.id),
+              {
+                id: entry.id,
+                error: caught instanceof Error ? caught.message : "Change could not be read.",
+              },
+            ];
+            if (changes.some((item) => item.id === entry.id)) staleIds.add(entry.id);
+            if (caught instanceof ServiceRequestError && caught.code === "CHANGE_UNAVAILABLE")
+              unavailableIds.add(entry.id);
+            if (pendingInspection?.scope === current && pendingInspection.name === entry.id)
+              pendingInspection = null;
           }
         }
-        await Promise.all(
-          Array.from({ length: Math.min(3, listing.changes.length) }, () => worker()),
-        );
+        pendingSummaries = 0;
+        render();
       } catch (caught) {
         if (
           directory !== currentDirectory ||
@@ -230,6 +222,13 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
           operation !== boardOperation
         )
           return;
+        if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
+          invalidate();
+          loadBoard();
+          return;
+        }
+        pendingSummaries = 0;
+        staleIds = new Set(changes.map((change) => change.id));
         errorMessage = caught instanceof Error ? caught.message : "The board could not be loaded.";
       } finally {
         if (
@@ -487,7 +486,80 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
       });
     }
   }
+  function canArchive() {
+    return (
+      !!scope &&
+      !loading &&
+      !archivePending &&
+      changes.some((change) => change.stage === "complete" && !unavailableIds.has(change.id))
+    );
+  }
+  async function startArchive() {
+    if (!canArchive()) return;
+    const captured = scope;
+    const originatingEpoch = epoch;
+    const expectedSession = sessionId;
+    const current = () =>
+      scope === captured && epoch === originatingEpoch && sessionId === expectedSession;
+    archivePending = true;
+    render();
+    try {
+      const result = await host.startSession({
+        providerId: "openspec-board",
+        id: "archive-all",
+        title: "Archive completed OpenSpec changes",
+        url: "https://openspec.dev/docs/quickstart",
+        navigation: "preserve",
+        text: archiveAllPrompt,
+      });
+      if (!current()) return;
+      if (result.sessionId && result.sent === "sent") {
+        await host.toast({
+          kind: result.linked !== false ? "success" : "info",
+          message:
+            result.linked !== false
+              ? `Archive prompt submitted in session ${result.sessionId}. Use refresh to see updates.`
+              : `Archive prompt submitted in session ${result.sessionId}, but its workflow reference could not be saved.`,
+        });
+      } else {
+        const reason =
+          result.sent === "no-model" ? "No model was available." : `Submission ${result.sent}.`;
+        await host.toast({
+          kind: "error",
+          persistent: true,
+          message: result.sessionId
+            ? `Session ${result.sessionId} exists, but the archive prompt was not submitted successfully. ${reason} Inspect this session before starting again.${result.linked === false ? " Its workflow reference was not saved." : ""}`
+            : "The archive session could not be created. Inspect sessions before starting again.",
+        });
+      }
+    } catch (caught) {
+      if (!current()) return;
+      const knownRefusal =
+        caught instanceof HostRequestError &&
+        ["NOT_GRANTED", "DISABLED", "NO_DIRECTORY", "HOST_REJECTED", "HOST_UNAVAILABLE"].includes(
+          caught.code,
+        );
+      await host.toast({
+        kind: "error",
+        persistent: !knownRefusal,
+        message: knownRefusal
+          ? `Archive launch failed: ${caught.message}`
+          : "Archive launch outcome is uncertain. A session or submitted prompt may already exist. Inspect sessions before starting again; this launch will not be retried automatically.",
+      });
+    } finally {
+      archivePending = false;
+      if (!disposed) render();
+    }
+  }
+  const archiveView = mountArchiveDialog(appRoot, {
+    current: () => scope,
+    canStart: canArchive,
+    start: () => {
+      void startArchive().catch(() => {});
+    },
+  });
   const boardView = mountBoardView(appRoot, {
+    archive: () => archiveView.open(),
     help: () => void openHelp(),
     create: () => {
       if (scope) createView.open();
@@ -527,6 +599,23 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     },
   });
   const detailView = mountDetailView(detailRoot, {
+    copyName: () => {
+      const name = selectedChange?.id;
+      if (!name) return;
+      void (async () => {
+        try {
+          await host.writeClipboard(name);
+        } catch (caught) {
+          await host.toast({
+            kind: "error",
+            message:
+              caught instanceof HostRequestError ? caught.message : "Could not copy change name",
+          });
+          return;
+        }
+        await host.toast({ kind: "success", message: "Change name copied" });
+      })().catch(() => {});
+    },
     openUrl: (url) => {
       void host
         .openUrl(url)
@@ -579,11 +668,14 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   function render() {
     createView.update();
     deleteView.update();
+    archiveView.update();
     const captured = scope;
     const originatingEpoch = epoch;
     boardView.update({
       directory,
       canCreate: !!scope,
+      canArchive: canArchive(),
+      archivePending,
       search,
       listedCount,
       completedTasks,
@@ -651,6 +743,7 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     sessionId = nextSession?.id ?? null;
   });
   return () => {
+    disposed = true;
     epoch++;
     selection++;
     detailOpening++;
@@ -662,6 +755,7 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     detailView.dispose();
     deleteView.dispose();
     createView.dispose();
+    archiveView.dispose();
     detailRoot.remove();
   };
 }

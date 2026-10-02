@@ -143,6 +143,32 @@ export function decodeTasks(value: unknown): Task[] {
   return tasks;
 }
 
+export type SummaryResult =
+  | { id: string; summary: ChangeMetadata }
+  | { id: string; error: { code: string; message: string } };
+
+export function decodeSummaries(value: unknown): { root: string; changes: SummaryResult[] } {
+  const input = record(value);
+  const root = string(input.root);
+  if (!Array.isArray(input.changes)) throw new Error("Invalid summaries.");
+  const changes = input.changes.map((value): SummaryResult => {
+    const item = record(value);
+    const id = string(item.id);
+    if (!isChangeName(id) || "summary" in item === "error" in item)
+      throw new Error("Invalid summary entry.");
+    if ("summary" in item) {
+      const summary = decodeSummary(item.summary);
+      if (summary.id !== id || summary.root !== root) throw new Error("Invalid summary scope.");
+      return { id, summary };
+    }
+    const error = record(item.error);
+    return { id, error: { code: string(error.code), message: string(error.message) } };
+  });
+  if (new Set(changes.map((entry) => entry.id)).size !== changes.length)
+    throw new Error("Duplicate change.");
+  return { root, changes };
+}
+
 export function decodeTaskResponse(value: unknown): Task[] {
   const item = record(value);
   return decodeTasks(item.tasks);

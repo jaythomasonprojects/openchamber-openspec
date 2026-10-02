@@ -2,7 +2,8 @@
 
 An OpenChamber panel and full-page board for the OpenSpec changes in your selected project or
 worktree. Browse planning artefacts and CLI-reported tasks without searching the file tree. Create
-or delete active changes, and prepare editable, unsent workflow prompts in your chat.
+or delete active changes, prepare editable, unsent per-change workflow prompts in your chat, or
+launch confirmed bulk archiving in a new session.
 
 ![OpenSpec board grouping changes by stage, with task progress and workflow actions.](docs/images/board-view.jpg)
 ![OpenSpec change detail showing the selected Specs tab and its specification.](docs/images/change-view.jpg)
@@ -16,8 +17,18 @@ easier to view or keep this extension up to date with OpenSpec are welcome.
 ## Before you start
 
 - Install the [OpenSpec CLI](https://openspec.dev/docs/installation) on the OpenChamber server, with
-  `openspec` on its `PATH`.
+  `openspec` on its `PATH`. Use a version that supports `status --all --json` (tested with 1.13.1).
 - Select the project you want to use and initialise OpenSpec.
+
+For faster loads, you can turn off OpenSpec usage telemetry on the OpenChamber server:
+
+```sh
+openspec config set telemetry.enabled false
+```
+
+Telemetry can add a wait to each CLI command. The extension does not change your telemetry setting.
+Environment variables set for the OpenChamber launcher do not reach the extension's service; use the
+OpenSpec config command instead.
 
 ## Get your project ready
 
@@ -49,12 +60,30 @@ easier to view or keep this extension up to date with OpenSpec are welcome.
    `https://github.com/jaythomasonprojects/openchamber-openspec.git` into **Folder, ZIP, or URL**
    and select **Add**.
 2. Review its permissions and choose **Allow and enable** if you trust it. Its local service runs
-   `openspec` with your user access; workflow prompts remain unsent.
+   `openspec` with your user access. Per-change workflow prompts remain unsent; confirmed **archive
+   all** creates a session and submits a prompt. Updates adding the sessions permission require
+   reapproval.
 3. Select the OpenSpec-enabled project in OpenChamber, then open the **OpenSpec** rail panel or find
    it under **Extension pages**. An empty board is expected until you have an active change. Use
    **new change** to create one, or open an existing change to read its artefacts and tasks.
 
 Git installations can check for updates in **Settings > Extensions**.
+
+## Archive completed changes
+
+Choose **archive all** beside **new change**, then confirm with **start archiving**. **cancel** or
+Escape dismisses the dialogue without creating a session. The secondary button is available when the
+loaded board has a Complete change; search does not narrow the operation.
+
+The new session uses your selected project or worktree and the host's current model and agent
+settings. The agent checks fresh CLI state, skips unfinished and zero-task changes, and archives
+completed changes sequentially through the archive skill. It can ask spec-sync questions or report
+blockers; the button does not approve those choices or guarantee unattended completion.
+
+The board and your current draft stay open. Follow the new session in the session list and use
+**refresh** to see updates. If creation or submission fails, inspect the reported session (or check
+the session list after an uncertain outcome) before starting again. The extension never retries
+automatically. Existing per-change **archive** continues to prepare an editable, unsent draft.
 
 ## Develop locally
 

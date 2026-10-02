@@ -22,6 +22,299 @@ import { fixtureChange, withProjects } from "./helpers/openspec.mjs";
 
 const exec = promisify(execFile);
 
+test("rootless failed change reads verify a fresh listing before reporting availability", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openspec-rootless-"));
+  const other = await mkdtemp(join(tmpdir(), "openspec-rootless-other-"));
+  try {
+    for (const path of ["/tasks", "/document"]) {
+      for (const [listedRoot, listed, expected] of [
+        [root, false, "CHANGE_UNAVAILABLE"],
+        [root, true, "OPENSPEC_ERROR"],
+        [other, false, "ROOT_CHANGED"],
+        [null, false, "NO_OPENSPEC_ROOT"],
+      ]) {
+        const calls = [];
+        await withService(
+          async (url) => {
+            const response = await fetch(`${url}${path}`, {
+              method: "POST",
+              headers: { authorization: "Bearer test-token" },
+              body: JSON.stringify({
+                directory: root,
+                expectedRoot: root,
+                change: "missing",
+                artifactId: "proposal",
+              }),
+            });
+            assert.equal((await response.json()).error.code, expected);
+            assert.deepEqual(calls, [path === "/tasks" ? "instructions" : "status", "list"]);
+          },
+          async (_directory, args) => {
+            calls.push(args[0]);
+            if (args[0] !== "list")
+              return {
+                ok: false,
+                value: { status: [{ message: "Change not found" }] },
+                error: { code: "OPENSPEC_ERROR", message: "Change not found", status: 422 },
+              };
+            return {
+              ok: true,
+              value: {
+                root: listedRoot ? { path: listedRoot } : null,
+                changes: listed ? [{ name: "missing", completedTasks: 0, totalTasks: 0 }] : [],
+              },
+            };
+          },
+        );
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+});
+
+test("real CLI missing tasks and documents report change unavailable, not missing root", async () => {
+  await withProjects(async (root) => {
+    await withService(async (url) => {
+      for (const path of ["/tasks", "/document"]) {
+        const response = await fetch(`${url}${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({
+            directory: root,
+            expectedRoot: root,
+            change: "missing",
+            artifactId: "proposal",
+          }),
+        });
+        assert.equal((await response.json()).error.code, "CHANGE_UNAVAILABLE");
+      }
+    });
+  });
+});
+
+// Adapt single-change CLI fixtures to the CLI's batch envelope, without extra calls.
+const batchRunner = (runner, id) => async (directory, args, remaining) => {
+  const result = await runner(directory, args, remaining);
+  if (args.includes("--all") && result.ok && !Array.isArray(result.value.changes))
+    return {
+      ok: true,
+      value: { root: result.value.root, changes: [{ ...result.value, changeName: id }] },
+    };
+  return result;
+};
+async function summaryResponse(url, options) {
+  const response = await fetch(url, options);
+  const value = await response.json();
+  const entry = value.changes?.[0];
+  return {
+    status: response.status,
+    json: async () => (entry ? (entry.summary ?? { error: entry.error }) : value),
+  };
+}
+
+test("summaries batch isolates CLI diagnostics, paths and metadata with one invocation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openspec-batch-"));
+  const other = await mkdtemp(join(tmpdir(), "openspec-escape-"));
+  const calls = [];
+  const status = (id, extra = {}) => ({
+    changeName: id,
+    changeRoot: join(root, id),
+    artifacts: [],
+    applyRequires: [],
+    artifactPaths: {},
+    ...extra,
+  });
+  for (const id of ["good", "bad-path", "bad-areas"]) await mkdir(join(root, id));
+  await writeFile(join(root, "bad-areas", ".openspec.yaml"), "affected_areas: not-an-array\n");
+  let value = {
+    root: { path: root },
+    changes: [
+      status("good"),
+      { changeName: "bad-schema", status: [{ message: "Unknown schema" }] },
+      status("bad-root", { changeRoot: other }),
+      status("bad-path", {
+        artifacts: [{ id: "proposal", status: "done", requires: [], outputPath: "proposal.md" }],
+        artifactPaths: { proposal: { existingOutputPaths: [join(other, "proposal.md")] } },
+      }),
+      status("bad-areas"),
+    ],
+  };
+  try {
+    await withService(
+      async (url) => {
+        const post = () =>
+          fetch(`${url}/summaries`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: root, expectedRoot: root }),
+          });
+        const response = await post();
+        assert.equal(response.status, 200);
+        const batch = await response.json();
+        assert.equal(batch.changes[0].summary.id, "good");
+        assert.deepEqual(
+          batch.changes.slice(1).map((entry) => entry.error.code),
+          ["OPENSPEC_ERROR", "BAD_CHANGE_ROOT", "BAD_DOCUMENT_PATH", "BAD_CLI_OUTPUT"],
+        );
+        assert.equal(batch.changes[1].error.message, "Unknown schema");
+        assert.deepEqual(calls, [["status", "--all"]]);
+        value = { root: { path: root }, changes: [] };
+        assert.deepEqual((await (await post()).json()).changes, []);
+        value = { root: { path: other }, changes: [] };
+        assert.equal((await (await post()).json()).error.code, "ROOT_CHANGED");
+        value = { root: { path: root }, changes: "invalid" };
+        assert.equal((await (await post()).json()).error.code, "BAD_CLI_OUTPUT");
+        value = undefined;
+        assert.equal((await (await post()).json()).error.code, "OPENSPEC_ERROR");
+      },
+      async (_directory, args) => {
+        calls.push(args);
+        return {
+          ok: false,
+          value,
+          error: { code: "OPENSPEC_ERROR", message: "Batch contains errors", status: 422 },
+        };
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+});
+
+test("summaries accepts real CLI exit one while keeping a good change", async () => {
+  await withProjects(async (root) => {
+    await fixtureChange(root, "good");
+    const bad = join(root, "openspec", "changes", "bad");
+    await mkdir(bad, { recursive: true });
+    await writeFile(join(bad, ".openspec.yaml"), "schema: nonexistent-schema\n");
+    await withService(async (url) => {
+      const response = await fetch(`${url}/summaries`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+        body: JSON.stringify({ directory: root, expectedRoot: root }),
+      });
+      assert.equal(response.status, 200);
+      const batch = await response.json();
+      assert.ok(batch.changes.find((entry) => entry.id === "good").summary);
+      assert.match(
+        batch.changes.find((entry) => entry.id === "bad").error.message,
+        /Unknown schema/,
+      );
+    });
+  });
+});
+
+test("slimmer read routes use only their working command and reconcile missing tasks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openspec-slim-"));
+  const calls = [];
+  let missing = false;
+  await writeFile(join(root, "proposal.md"), "Proposal");
+  try {
+    await withService(
+      async (url) => {
+        const post = (path) =>
+          fetch(`${url}${path}`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({
+              directory: root,
+              expectedRoot: root,
+              change: "slim",
+              artifactId: "proposal",
+            }),
+          });
+        assert.equal((await post("/changes")).status, 200);
+        assert.equal((await post("/document")).status, 200);
+        assert.equal((await post("/tasks")).status, 200);
+        assert.deepEqual(calls, ["list", "status", "instructions"]);
+        missing = true;
+        const response = await post("/tasks");
+        assert.equal((await response.json()).error.code, "CHANGE_UNAVAILABLE");
+        assert.deepEqual(calls.slice(-2), ["instructions", "list"]);
+      },
+      async (_directory, args) => {
+        calls.push(args[0]);
+        if (missing && args[0] === "instructions")
+          return {
+            ok: false,
+            error: { code: "OPENSPEC_ERROR", message: "Missing change", status: 422 },
+            value: { root: { path: root } },
+          };
+        return {
+          ok: true,
+          value: {
+            root: { path: root },
+            changes: [],
+            tasks: [],
+            changeRoot: root,
+            artifacts: [
+              { id: "proposal", status: "done", requires: [], outputPath: "proposal.md" },
+            ],
+            applyRequires: [],
+            artifactPaths: { proposal: { existingOutputPaths: [join(root, "proposal.md")] } },
+          },
+        };
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("read root verification rejects missing, null, implicit and changed roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openspec-read-root-"));
+  const other = await mkdtemp(join(tmpdir(), "openspec-other-root-"));
+  try {
+    for (const [reported, code, status] of [
+      [undefined, "NO_OPENSPEC_ROOT", 404],
+      [null, "NO_OPENSPEC_ROOT", 404],
+      [{ path: root, source: "implicit" }, "NO_OPENSPEC_ROOT", 404],
+      [{ path: other }, "ROOT_CHANGED", 409],
+    ]) {
+      await withService(
+        async (url) => {
+          const response = await fetch(`${url}/changes`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: root, expectedRoot: root }),
+          });
+          assert.equal(response.status, status);
+          assert.equal((await response.json()).error.code, code);
+        },
+        async (_directory, args) => ({
+          ok: true,
+          value: { root: args[0] === "context" ? { path: root } : reported, changes: [] },
+        }),
+      );
+    }
+    await withService(
+      async (url) => {
+        const response = await fetch(`${url}/changes`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: root }),
+        });
+        assert.equal(response.status, 404);
+        assert.equal((await response.json()).error.code, "NO_OPENSPEC_ROOT");
+      },
+      async (_directory, args) =>
+        args[0] === "context"
+          ? { ok: true, value: { root: { path: root } } }
+          : {
+              ok: false,
+              error: { code: "OPENSPEC_ERROR", message: "No root", status: 422 },
+              value: { root: null, status: [{ code: "no_openspec_root" }] },
+            },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+});
+
 async function withService(run, runner, options) {
   const server = createOpenSpecService("test-token", runner, options);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -49,11 +342,17 @@ test("one request deadline stops a sequence of individually short commands", asy
         });
         assert.equal(response.status, 504);
         assert.equal((await response.json()).error.code, "CLI_TIMEOUT");
-        assert.equal(calls.includes("instructions"), false);
+        assert.deepEqual(calls, ["instructions", "list"]);
       },
       async (_directory, args) => {
         calls.push(args[0]);
         await new Promise((resolve) => setTimeout(resolve, 45));
+        if (args[0] === "instructions")
+          return {
+            ok: false,
+            error: { code: "OPENSPEC_ERROR", message: "Retryable", status: 422 },
+            value: { root: { path: root } },
+          };
         return {
           ok: true,
           value:
@@ -142,7 +441,7 @@ test("body receipt consumes the same budget as later CLI commands", async () => 
         });
         assert.equal(result.status, 504);
         assert.equal(result.body.error.code, "CLI_TIMEOUT");
-        assert.equal(calls.includes("list"), false);
+        assert.deepEqual(calls, ["list"]);
       },
       async (_directory, args, remaining) => {
         calls.push(args[0]);
@@ -225,67 +524,71 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
     }
   );
   try {
-    await withService(async (url) => {
-      const summary = async () => {
-        const before = calls.length;
-        const response = await fetch(`${url}/summary`, {
-          method: "POST",
-          headers: { authorization: "Bearer test-token" },
-          body: JSON.stringify({ directory: root, expectedRoot: root, change: "goal-change" }),
-        });
-        assert.deepEqual(calls.slice(before), ["context", "status"]);
-        return { status: response.status, value: await response.json() };
-      };
-      assert.deepEqual((await summary()).value.affectedAreas, []);
-      assert.deepEqual((await summary()).value.goal, null);
-      for (const [areas, expected] of [
-        [undefined, []],
-        [[], []],
-        [
-          ["auth", "api", "auth", " <b>literal</b> "],
-          ["auth", "api", "auth", " <b>literal</b> "],
-        ],
-      ]) {
+    await withService(
+      async (url) => {
+        const summary = async () => {
+          const before = calls.length;
+          const response = await summaryResponse(`${url}/summaries`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: root, expectedRoot: root, change: "goal-change" }),
+          });
+          assert.deepEqual(calls.slice(before), ["status"]);
+          return { status: response.status, value: await response.json() };
+        };
+        assert.deepEqual((await summary()).value.affectedAreas, []);
+        assert.deepEqual((await summary()).value.goal, null);
+        for (const [areas, expected] of [
+          [undefined, []],
+          [[], []],
+          [
+            ["auth", "api", "auth", " <b>literal</b> "],
+            ["auth", "api", "auth", " <b>literal</b> "],
+          ],
+        ]) {
+          await writeFile(
+            metadataPath,
+            JSON.stringify({
+              goal: "Kept goal",
+              ...(areas === undefined ? {} : { affected_areas: areas }),
+            }),
+          );
+          const result = await summary();
+          assert.equal(result.status, 200);
+          assert.equal(result.value.goal, "Kept goal");
+          assert.deepEqual(result.value.affectedAreas, expected);
+        }
+        for (const areas of [null, "auth", {}, [""], [1], ["auth", false]]) {
+          await writeFile(metadataPath, JSON.stringify({ affected_areas: areas }));
+          assert.equal((await summary()).value.error.code, "BAD_CLI_OUTPUT");
+        }
+        const header = "goal: boundary\n# ";
+        await writeFile(metadataPath, header + "x".repeat(240_000 - Buffer.byteLength(header)));
+        assert.equal((await summary()).value.goal, "boundary");
+        await writeFile(metadataPath, header + "x".repeat(240_001 - Buffer.byteLength(header)));
+        const oversized = await summary();
+        assert.equal(oversized.status, 200);
+        assert.equal(oversized.value.error.code, "METADATA_TOO_LARGE");
         await writeFile(
           metadataPath,
-          JSON.stringify({
-            goal: "Kept goal",
-            ...(areas === undefined ? {} : { affected_areas: areas }),
-          }),
+          `${header}é${"x".repeat(240_001 - Buffer.byteLength(header) - 2)}`,
         );
-        const result = await summary();
-        assert.equal(result.status, 200);
-        assert.equal(result.value.goal, "Kept goal");
-        assert.deepEqual(result.value.affectedAreas, expected);
-      }
-      for (const areas of [null, "auth", {}, [""], [1], ["auth", false]]) {
-        await writeFile(metadataPath, JSON.stringify({ affected_areas: areas }));
-        assert.equal((await summary()).value.error.code, "BAD_CLI_OUTPUT");
-      }
-      const header = "goal: boundary\n# ";
-      await writeFile(metadataPath, header + "x".repeat(240_000 - Buffer.byteLength(header)));
-      assert.equal((await summary()).value.goal, "boundary");
-      await writeFile(metadataPath, header + "x".repeat(240_001 - Buffer.byteLength(header)));
-      const oversized = await summary();
-      assert.equal(oversized.status, 413);
-      assert.equal(oversized.value.error.code, "METADATA_TOO_LARGE");
-      await writeFile(
-        metadataPath,
-        `${header}é${"x".repeat(240_001 - Buffer.byteLength(header) - 2)}`,
-      );
-      assert.equal((await summary()).value.error.code, "METADATA_TOO_LARGE");
-      await writeFile(metadataPath, "goal: café\n");
-      assert.equal((await summary()).value.goal, "café");
-      await rm(metadataPath);
-      const outside = join(root, "outside.yaml");
-      await writeFile(outside, "affected_areas: [unsafe]\n");
-      await symlink(outside, metadataPath);
-      assert.equal((await summary()).value.error.code, "BAD_DOCUMENT_PATH");
-      assert.equal(
-        (await fetch(`${url}/health`, { headers: { authorization: "Bearer test-token" } })).status,
-        200,
-      );
-    }, runner);
+        assert.equal((await summary()).value.error.code, "METADATA_TOO_LARGE");
+        await writeFile(metadataPath, "goal: café\n");
+        assert.equal((await summary()).value.goal, "café");
+        await rm(metadataPath);
+        const outside = join(root, "outside.yaml");
+        await writeFile(outside, "affected_areas: [unsafe]\n");
+        await symlink(outside, metadataPath);
+        assert.equal((await summary()).value.error.code, "BAD_DOCUMENT_PATH");
+        assert.equal(
+          (await fetch(`${url}/health`, { headers: { authorization: "Bearer test-token" } }))
+            .status,
+          200,
+        );
+      },
+      batchRunner(runner, "goal-change"),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -398,62 +701,65 @@ test("scoped routes expose distinct current documents and reject root changes an
       body: JSON.stringify({ directory: root, expectedRoot: root, ...body }),
     });
   try {
-    await withService(async (url) => {
-      const mismatch = await post(url, "/create", {
-        name: "not-written",
-        goal: "No write",
-        expectedRoot: "/different",
-      });
-      assert.equal(mismatch.status, 409);
-      assert.equal((await mismatch.json()).error.code, "ROOT_CHANGED");
-      assert.equal(calls.includes("new"), false);
-      const listing = await post(url, "/changes", {});
-      assert.equal(listing.status, 200);
-      assert.deepEqual(
-        (await listing.json()).changes.map((item) => item.id),
-        ["two-docs"],
-      );
-      const summary = await post(url, "/summary", { change: "two-docs" });
-      assert.equal(summary.status, 200);
-      const metadata = await summary.json();
-      assert.equal(metadata.id, "two-docs");
-      const documents = metadata.documents;
-      assert.deepEqual(
-        documents.map((item) => item.label),
-        ["specs/first.md", "specs/second.md"],
-      );
-      for (const [index, expected] of ["First file", "Second file"].entries()) {
-        const document = await post(url, "/document", {
+    await withService(
+      async (url) => {
+        const mismatch = await post(url, "/create", {
+          name: "not-written",
+          goal: "No write",
+          expectedRoot: "/different",
+        });
+        assert.equal(mismatch.status, 409);
+        assert.equal((await mismatch.json()).error.code, "ROOT_CHANGED");
+        assert.equal(calls.includes("new"), false);
+        const listing = await post(url, "/changes", {});
+        assert.equal(listing.status, 200);
+        assert.deepEqual(
+          (await listing.json()).changes.map((item) => item.id),
+          ["two-docs"],
+        );
+        const summary = await post(url, "/summaries", {});
+        assert.equal(summary.status, 200);
+        const metadata = (await summary.json()).changes[0].summary;
+        assert.equal(metadata.id, "two-docs");
+        const documents = metadata.documents;
+        assert.deepEqual(
+          documents.map((item) => item.label),
+          ["specs/first.md", "specs/second.md"],
+        );
+        for (const [index, expected] of ["First file", "Second file"].entries()) {
+          const document = await post(url, "/document", {
+            change: "two-docs",
+            artifactId: "specs",
+            selector: documents[index].selector,
+          });
+          assert.equal(document.status, 200);
+          assert.equal((await document.json()).content, expected);
+        }
+        paths = paths.toReversed();
+        const reordered = await post(url, "/document", {
           change: "two-docs",
           artifactId: "specs",
-          selector: documents[index].selector,
+          selector: documents[0].selector,
         });
-        assert.equal(document.status, 200);
-        assert.equal((await document.json()).content, expected);
-      }
-      paths = paths.toReversed();
-      const reordered = await post(url, "/document", {
-        change: "two-docs",
-        artifactId: "specs",
-        selector: documents[0].selector,
-      });
-      assert.equal((await reordered.json()).content, "First file");
-      paths = [paths[0]];
-      const removed = await post(url, "/document", {
-        change: "two-docs",
-        artifactId: "specs",
-        selector: documents[0].selector,
-      });
-      assert.equal(removed.status, 404);
-      paths = [join(changeRoot, "specs", "escape.md")];
-      const escaped = await post(url, "/document", {
-        change: "two-docs",
-        artifactId: "specs",
-        selector: "specs/escape.md",
-      });
-      assert.notEqual(escaped.status, 200);
-      assert.equal(calls.filter((arg) => arg === "instructions").length, 0);
-    }, runner);
+        assert.equal((await reordered.json()).content, "First file");
+        paths = [paths[0]];
+        const removed = await post(url, "/document", {
+          change: "two-docs",
+          artifactId: "specs",
+          selector: documents[0].selector,
+        });
+        assert.equal(removed.status, 404);
+        paths = [join(changeRoot, "specs", "escape.md")];
+        const escaped = await post(url, "/document", {
+          change: "two-docs",
+          artifactId: "specs",
+          selector: "specs/escape.md",
+        });
+        assert.notEqual(escaped.status, 200);
+        assert.equal(calls.filter((arg) => arg === "instructions").length, 0);
+      },
+      batchRunner(runner, "two-docs"),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -508,20 +814,23 @@ test("board metadata stays lightweight and Tasks returns only CLI records", asyn
       }),
     });
   try {
-    await withService(async (url) => {
-      const listing = await post(url, "/changes");
-      assert.equal(listing.status, 200);
-      const summary = await post(url, "/summary");
-      assert.equal(summary.status, 200);
-      assert.deepEqual(calls, ["context", "list", "context", "status"]);
-      assert.equal((await summary.json()).documents[0].selector, "tasks.md");
-      const tasks = await post(url, "/tasks");
-      assert.equal(tasks.status, 200);
-      assert.deepEqual((await tasks.json()).tasks, [
-        { id: "1", description: "CLI first line", done: false },
-      ]);
-      assert.deepEqual(calls.slice(-3), ["context", "status", "instructions"]);
-    }, runner);
+    await withService(
+      async (url) => {
+        const listing = await post(url, "/changes");
+        assert.equal(listing.status, 200);
+        const summary = await post(url, "/summaries");
+        assert.equal(summary.status, 200);
+        assert.deepEqual(calls, ["list", "status"]);
+        assert.equal((await summary.json()).changes[0].summary.documents[0].selector, "tasks.md");
+        const tasks = await post(url, "/tasks");
+        assert.equal(tasks.status, 200);
+        assert.deepEqual((await tasks.json()).tasks, [
+          { id: "1", description: "CLI first line", done: false },
+        ]);
+        assert.deepEqual(calls.slice(-1), ["instructions"]);
+      },
+      batchRunner(runner, "light-change"),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -555,7 +864,7 @@ test("a failed status confirms missing changes before reporting them unavailable
       });
       assert.equal(response.status, 404);
       assert.equal((await response.json()).error.code, "CHANGE_UNAVAILABLE");
-      assert.deepEqual(calls, ["context", "status", "list"]);
+      assert.deepEqual(calls, ["status", "list"]);
     }, runner);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -584,10 +893,15 @@ test("a failed status stays retryable for a listed change and propagates root re
   try {
     await withService(async (url) => {
       const request = () =>
-        fetch(`${url}/summary`, {
+        fetch(`${url}/document`, {
           method: "POST",
           headers: { authorization: "Bearer test-token" },
-          body: JSON.stringify({ directory: root, expectedRoot: root, change: "listed-change" }),
+          body: JSON.stringify({
+            directory: root,
+            expectedRoot: root,
+            change: "listed-change",
+            artifactId: "proposal",
+          }),
         });
       const transient = await request();
       assert.equal(transient.status, 422);
@@ -621,9 +935,11 @@ test("scoped routes read and create changes in a disposable real OpenSpec projec
         changes.map((item) => item.id),
         ["real-change"],
       );
-      const summary = await post("/summary", { expectedRoot: root, change: "real-change" });
+      const summary = await post("/summaries", { expectedRoot: root });
       assert.equal(summary.status, 200);
-      const metadata = await summary.json();
+      const metadata = (await summary.json()).changes.find(
+        (entry) => entry.id === "real-change",
+      ).summary;
       assert.equal(metadata.goal, "Real fixture goal");
       const documents = metadata.documents;
       const proposal = documents.find((item) => item.artifactId === "proposal");
@@ -664,9 +980,11 @@ test("real CLI numeric-prefixed changes remain listed, readable and scoped for w
         "100-add-feature",
         "add-feature",
       ]);
-      const summary = await post("/summary", { change: "100-add-feature" });
+      const summary = await post("/summaries", {});
       assert.equal(summary.status, 200);
-      const observed = await summary.json();
+      const observed = (await summary.json()).changes.find(
+        (entry) => entry.id === "100-add-feature",
+      ).summary;
       assert.equal(observed.goal, "Numeric change");
       const proposal = observed.documents.find((document) => document.artifactId === "proposal");
       assert.ok(proposal);
@@ -1219,7 +1537,7 @@ test("malformed listing entries and count bounds fail explicitly", async () => {
         },
         async (_directory, args) => ({
           ok: true,
-          value: args[0] === "context" ? { root: { path: root } } : { changes },
+          value: { root: { path: root }, changes },
         }),
       );
     }
@@ -1248,23 +1566,26 @@ test("invalid status dependencies fail a change read, while skipped custom artif
     ]) {
       await withService(
         async (url) => {
-          const response = await fetch(`${url}/summary`, {
+          const response = await summaryResponse(`${url}/summaries`, {
             method: "POST",
             headers: { authorization: "Bearer test-token" },
             body: JSON.stringify({ directory: root, expectedRoot: root, change: "custom-change" }),
           });
-          assert.equal(response.status, 502);
+          assert.equal(response.status, 200);
           assert.equal((await response.json()).error.code, "BAD_CLI_OUTPUT");
         },
-        async (_directory, args) => ({
-          ok: true,
-          value: args[0] === "context" ? { root: { path: root } } : status,
-        }),
+        batchRunner(
+          async (_directory, args) => ({
+            ok: true,
+            value: args[0] === "context" ? { root: { path: root } } : status,
+          }),
+          "custom-change",
+        ),
       );
     }
     await withService(
       async (url) => {
-        const response = await fetch(`${url}/summary`, {
+        const response = await summaryResponse(`${url}/summaries`, {
           method: "POST",
           headers: { authorization: "Bearer test-token" },
           body: JSON.stringify({ directory: root, expectedRoot: root, change: "custom-change" }),
@@ -1274,15 +1595,18 @@ test("invalid status dependencies fail a change read, while skipped custom artif
         assert.equal(summary.goal, null);
         assert.deepEqual(summary.applyRequires, ["custom"]);
       },
-      async (_directory, args) => ({
-        ok: true,
-        value:
-          args[0] === "context"
-            ? { root: { path: root } }
-            : args[0] === "list"
-              ? { changes: [{ name: "custom-change", completedTasks: 0, totalTasks: 0 }] }
-              : base,
-      }),
+      batchRunner(
+        async (_directory, args) => ({
+          ok: true,
+          value:
+            args[0] === "context"
+              ? { root: { path: root } }
+              : args[0] === "list"
+                ? { changes: [{ name: "custom-change", completedTasks: 0, totalTasks: 0 }] }
+                : base,
+        }),
+        "custom-change",
+      ),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

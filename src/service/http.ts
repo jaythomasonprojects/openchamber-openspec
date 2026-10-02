@@ -99,12 +99,8 @@ export function createOpenSpecService(
       const work =
         path === "/changes"
           ? adapter.changes(directory, expectedRoot)
-          : path === "/summary"
-            ? adapter.summary(
-                directory,
-                requiredString(body, "change"),
-                requiredString(body, "expectedRoot"),
-              )
+          : path === "/summaries"
+            ? adapter.summaries(directory, requiredString(body, "expectedRoot"))
             : path === "/tasks"
               ? adapter.tasks(
                   directory,

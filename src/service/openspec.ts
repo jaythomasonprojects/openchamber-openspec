@@ -6,6 +6,7 @@ import {
   decodeListingEntry,
   decodeTasks,
   type ListingEntry,
+  type ChangeMetadata,
 } from "../contracts.js";
 import { isChangeName } from "../model.js";
 import {
@@ -15,6 +16,7 @@ import {
   type CommandRunner,
   type Json,
   type ServiceError,
+  ServiceFault,
 } from "./cli.js";
 
 type Scope = { root: string };
@@ -42,11 +44,41 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     return { root: canonical };
   }
 
-  async function checked(directory: string, args: string[], current: Scope): Promise<CliResult> {
+  async function checked(
+    directory: string,
+    args: string[],
+    current: Scope | undefined,
+    strict = false,
+    reconcileRootless = false,
+  ): Promise<CliResult> {
+    if (!isAbsolute(directory))
+      return failure(serviceError("BAD_DIRECTORY", "Directory must be absolute."));
     const result = await run(directory, args);
+    const rootlessFailure =
+      reconcileRootless &&
+      !result.ok &&
+      result.error.code === "OPENSPEC_ERROR" &&
+      result.value &&
+      !("root" in result.value);
+    if (strict && result.value && !rootlessFailure) {
+      const root = result.value.root as Json | undefined;
+      if (!root || typeof root.path !== "string" || root.source === "implicit")
+        return failure(
+          serviceError(
+            "NO_OPENSPEC_ROOT",
+            "This directory does not resolve to an OpenSpec project.",
+            404,
+          ),
+        );
+      if (current && (await realpath(root.path)) !== current.root)
+        return failure(
+          serviceError("ROOT_CHANGED", "The selected OpenSpec root has changed.", 409),
+        );
+    }
     if (!result.ok) return result;
     const reported = (result.value.root as Json | undefined)?.path;
     if (
+      current &&
       reported !== undefined &&
       (typeof reported !== "string" || (await realpath(reported)) !== current.root)
     )
@@ -66,19 +98,9 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     current: Scope,
   ): Promise<State | ServiceError> {
     if (!isChangeName(change)) return serviceError("BAD_CHANGE", "Change name is invalid.");
-    const result = await checked(directory, ["status", "--change", change], current);
+    const result = await checked(directory, ["status", "--change", change], current, true, true);
     if (!result.ok) {
-      if (result.error.code === "OPENSPEC_ERROR") {
-        const currentListing = await list(directory, current);
-        if ("code" in currentListing && currentListing.code === "ROOT_CHANGED")
-          return currentListing;
-        if (
-          !("code" in currentListing) &&
-          !currentListing.changes.some((entry) => entry.id === change)
-        )
-          return serviceError("CHANGE_UNAVAILABLE", "Change is no longer listed.", 404);
-      }
-      return result.error;
+      return reconcileChange(directory, change, current, result.error);
     }
     if (typeof result.value.changeRoot !== "string")
       return serviceError("BAD_CLI_OUTPUT", "OpenSpec did not return a change root.", 502);
@@ -92,18 +114,39 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     return { root: current.root, changeRoot, status: result.value };
   }
 
+  async function reconcileChange(
+    directory: string,
+    change: string,
+    current: Scope,
+    error: ServiceError,
+  ): Promise<ServiceError> {
+    if (error.code === "OPENSPEC_ERROR") {
+      const listing = await list(directory, current);
+      if ("code" in listing && ["ROOT_CHANGED", "NO_OPENSPEC_ROOT"].includes(listing.code))
+        return listing;
+      if (!("code" in listing) && !listing.changes.some((entry) => entry.id === change))
+        return serviceError("CHANGE_UNAVAILABLE", "Change is no longer listed.", 404);
+    }
+    return error;
+  }
+
   async function list(
     directory: string,
-    current: Scope,
-  ): Promise<{ changes: ListingEntry[] } | ServiceError> {
-    const result = await checked(directory, ["list"], current);
+    current: Scope | undefined,
+    strict = true,
+  ): Promise<{ root: string; changes: ListingEntry[] } | ServiceError> {
+    const result = await checked(directory, ["list"], current, strict);
     if (!result.ok) return result.error;
     try {
       if (!Array.isArray(result.value.changes)) throw new Error("Missing changes.");
       const changes = result.value.changes.map((item) => decodeListingEntry(item, "name"));
       if (new Set(changes.map((item) => item.id)).size !== changes.length)
         throw new Error("Duplicate change.");
-      return { changes };
+      const reported = (result.value.root as Json | undefined)?.path;
+      return {
+        root: typeof reported === "string" ? await realpath(reported) : current!.root,
+        changes,
+      };
     } catch {
       return serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec change listing.", 502);
     }
@@ -149,16 +192,14 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     };
   }
 
-  async function summaryFor(directory: string, current: Scope, change: string): Promise<CliResult> {
-    const state = await changeState(directory, change, current);
-    if ("code" in state) return failure(state);
+  async function summaryFor(state: State, change: string): Promise<CliResult> {
     try {
       const artifacts = decodeArtifacts(state.status.artifacts, state.status.applyRequires);
       return {
         ok: true,
         value: {
           id: change,
-          root: current.root,
+          root: state.root,
           ...(await metadataFor(state)),
           artifacts,
           applyRequires: state.status.applyRequires,
@@ -172,22 +213,63 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
   }
 
   async function changes(directory: string, expectedRoot?: string): Promise<CliResult> {
-    const current = await context(directory, expectedRoot);
-    if ("code" in current) return failure(current);
-    const listing = await list(directory, current);
-    return "code" in listing
-      ? failure(listing)
-      : { ok: true, value: { directory, root: current.root, ...listing } };
+    const listing = await list(directory, expectedRoot ? { root: expectedRoot } : undefined);
+    return "code" in listing ? failure(listing) : { ok: true, value: { directory, ...listing } };
   }
 
-  async function summary(
-    directory: string,
-    change: string,
-    expectedRoot: string,
-  ): Promise<CliResult> {
-    const current = await context(directory, expectedRoot);
-    if ("code" in current) return failure(current);
-    return summaryFor(directory, current, change);
+  async function summaries(directory: string, expectedRoot: string): Promise<CliResult> {
+    const result = await checked(directory, ["status", "--all"], { root: expectedRoot }, true);
+    if (!result.value) return result;
+    if (!result.ok && result.error.code !== "OPENSPEC_ERROR") return result;
+    if (!Array.isArray(result.value.changes))
+      return failure(serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec batch status.", 502));
+    const ids = new Set<string>();
+    const changes: (
+      | { id: string; summary: ChangeMetadata }
+      | { id: string; error: { code: string; message: string } }
+    )[] = [];
+    for (const entry of result.value.changes) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry))
+        return failure(serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec batch entry.", 502));
+      const status = entry as Json;
+      const id = status.changeName;
+      if (typeof id !== "string" || !isChangeName(id) || ids.has(id))
+        return failure(serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec batch change name.", 502));
+      ids.add(id);
+      try {
+        if (!Array.isArray(status.artifacts)) {
+          const diagnostics = status.status;
+          const message =
+            Array.isArray(diagnostics) &&
+            diagnostics.find(
+              (item) => item?.severity === "error" || typeof item?.message === "string",
+            )?.message;
+          throw serviceError(
+            "OPENSPEC_ERROR",
+            typeof message === "string" ? message : "OpenSpec could not read this change.",
+            422,
+          );
+        }
+        if (typeof status.changeRoot !== "string") throw new Error("Missing change root.");
+        const changeRoot = await realpath(status.changeRoot);
+        if (!inside(changeRoot, expectedRoot))
+          throw serviceError(
+            "BAD_CHANGE_ROOT",
+            "OpenSpec returned a change outside the selected project.",
+            502,
+          );
+        const summary = await summaryFor({ root: expectedRoot, changeRoot, status }, id);
+        if (!summary.ok) throw summary.error;
+        changes.push({ id, summary: summary.value as ChangeMetadata });
+      } catch (caught) {
+        const error =
+          caught instanceof ServiceFault
+            ? caught
+            : serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec change data.", 502);
+        changes.push({ id, error: { code: error.code, message: error.message } });
+      }
+    }
+    return { ok: true, value: { root: expectedRoot, changes } };
   }
 
   function documentsFor(state: State, artifacts: { id: string }[]) {
@@ -270,12 +352,17 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     change: string,
     expectedRoot: string,
   ): Promise<CliResult> {
-    const current = await context(directory, expectedRoot);
-    if ("code" in current) return failure(current);
-    const state = await changeState(directory, change, current);
-    if ("code" in state) return failure(state);
-    const apply = await checked(directory, ["instructions", "apply", "--change", change], current);
-    if (!apply.ok) return apply;
+    if (!isChangeName(change))
+      return failure(serviceError("BAD_CHANGE", "Change name is invalid."));
+    const current = { root: expectedRoot };
+    const apply = await checked(
+      directory,
+      ["instructions", "apply", "--change", change],
+      current,
+      true,
+      true,
+    );
+    if (!apply.ok) return failure(await reconcileChange(directory, change, current, apply.error));
     try {
       return { ok: true, value: { tasks: decodeTasks(apply.value.tasks) } };
     } catch (caught) {
@@ -289,10 +376,9 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     change: string,
     artifactId: string,
     selector?: string,
-    expectedRoot?: string,
+    expectedRoot: string = directory,
   ): Promise<CliResult> {
-    const current = await context(directory, expectedRoot);
-    if ("code" in current) return failure(current);
+    const current = { root: expectedRoot };
     const state = await changeState(directory, change, current);
     if ("code" in state) return failure(state);
     let documents;
@@ -372,7 +458,7 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
       return failure(serviceError("BAD_CHANGE", "Change name is invalid."));
     const current = await context(directory, expectedRoot);
     if ("code" in current) return failure(current);
-    const listing = await list(directory, current);
+    const listing = await list(directory, current, false);
     if ("code" in listing) return failure(listing);
     if (!listing.changes.some((item) => item.id === change))
       return failure(serviceError("CHANGE_UNAVAILABLE", "Change is no longer listed.", 404));
@@ -413,5 +499,5 @@ export function createOpenSpecAdapter(run: CommandRunner = runOpenSpec, remove: 
     }
   }
 
-  return { changes, summary, tasks, documentFor, createChange, deleteChange };
+  return { changes, summaries, tasks, documentFor, createChange, deleteChange };
 }

@@ -19,7 +19,8 @@ export class ServiceFault extends Error {
   }
 }
 export type ServiceError = ServiceFault;
-export type CliResult = { ok: true; value: Json } | { ok: false; error: ServiceError };
+export type CliResult =
+  { ok: true; value: Json } | { ok: false; error: ServiceError; value?: Json };
 export type CommandRunner = (
   directory: string,
   args: string[],
@@ -129,6 +130,9 @@ export async function runOpenSpec(
       } else {
         finish({
           ok: false,
+          ...(value && typeof value === "object" && !Array.isArray(value)
+            ? { value: value as Json }
+            : {}),
           error: serviceError(
             code === null ? "CLI_TIMEOUT" : "OPENSPEC_ERROR",
             cliMessage(value, stderr),

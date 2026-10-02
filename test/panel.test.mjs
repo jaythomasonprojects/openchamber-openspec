@@ -66,6 +66,8 @@ function hostHtml() {
     let holdSummaries = location.search.includes("hold-summary");
     const pendingSummaries = [];
     let failSummary = location.search.includes("fail-summary");
+    let batchReply = "";
+    window.__batchReply = (value) => { batchReply = value; };
     let failDocument = false;
     let failTasks = false;
     let unavailable = false;
@@ -94,6 +96,24 @@ function hostHtml() {
     let holdCompose = false;
     let failCompose = false;
     let failOpenUrl = false;
+    let holdClipboard = false;
+    let failClipboard = false;
+    let failToast = false;
+    const pendingClipboard = [];
+    window.__holdClipboard = () => { holdClipboard = true; };
+    window.__releaseClipboard = () => { holdClipboard = false; pendingClipboard.splice(0).forEach((finish) => finish()); };
+    window.__failClipboard = () => { failClipboard = true; };
+    window.__failToast = () => { failToast = true; };
+    let holdStart = false;
+    let startResult = { sessionId: "archive-session", directory, sent: "sent", linked: true };
+    let startError = null;
+    const pendingStarts = [];
+    window.__startResult = (result) => { startResult = result; startError = null; };
+    window.__startError = (code) => { startError = code; };
+    window.__holdStart = () => { holdStart = true; };
+    window.__releaseStart = () => { holdStart = false; pendingStarts.splice(0).forEach((finish) => finish()); };
+    window.__surface = (surface) => { ready.surface = surface;
+      for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1, type: "ready", payload: ready }, "*"); };
     const pendingCompose = [];
     const pending = [];
     window.__requests = [];
@@ -127,6 +147,7 @@ function hostHtml() {
     window.__releaseCreate = () => { holdCreate = false; pendingCreates.splice(0).forEach((finish) => finish()); };
     window.__holdProposal = () => { holdProposal = true; };
     window.__holdTasks = () => { holdTasks = true; };
+    window.__releaseReads = () => { holdProposal = false; holdTasks = false; pending.splice(0).forEach((finish) => finish()); };
     window.__design = () => { withDesign = true; };
     window.__longSpec = () => { longSpec = true; };
     window.__failSpec2 = () => { failSpec2 = true; };
@@ -150,7 +171,7 @@ function hostHtml() {
     window.__holdSummaries = () => { holdSummaries = true; };
     window.__holdFiles = () => { holdFiles = true; };
     window.__releaseFile = () => { const finish = pending.shift(); finish?.(); };
-    window.__directory = (next) => { for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
+    window.__directory = (next) => { ready.directory = next; for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
       type: "directory", payload: { directory: next } }, "*"); };
     window.__root = (next) => { currentRoot = next; };
     const ready = { directory, theme, locale: "en-AU", session: { id: "fixture-session" },
@@ -180,10 +201,26 @@ function hostHtml() {
             changes: body.directory === directory ? changes.map(({ id, completedTasks, totalTasks }) => ({ id, completedTasks, totalTasks })) : [] });
           if (holdListing) pending.push(finish); else finish();
         }
-        else if (path === "/summary") {
+        else if (path === "/summaries") {
+          if (body.directory !== directory) { send({ root: body.directory + "/openspec", changes: [] }); return; }
+          if (batchReply) {
+            const mode = batchReply; batchReply = "";
+            if (mode === "malformed") send({ root: currentRoot, changes: null });
+            else if (mode === "root") send({ error: { code: "ROOT_CHANGED", message: "Root changed" } }, 409);
+            else send({ error: { code: "CLI_UNAVAILABLE", message: "Batch read failed" } }, 503);
+            return;
+          }
+          const finish = () => {
+            const results = changes.map((item) => {
+              let result;
+              respondSummary({ ...body, change: item.id }, (value) => { result = value.error ? { id: item.id, error: value.error } : { id: item.id, summary: value }; });
+              return result;
+            });
+            send({ root: currentRoot, changes: results });
+          };
           if (holdSummaries) {
-            pendingSummaries.push(() => respondSummary(body, send));
-          } else respondSummary(body, send);
+            pendingSummaries.push(finish);
+          } else finish();
         }
         else if (path === "/tasks") {
           if (rootErrorPath === path) { rootErrorPath = ""; send({ error: { code: "ROOT_CHANGED", message: "Root changed" } }, 409); return; }
@@ -248,6 +285,15 @@ function hostHtml() {
         if (holdCompose) pendingCompose.push(finish); else finish();
         return;
       }
+      if (message.type === "start-session") {
+        window.__requests.push({ path: "start-session", body: message.payload, directory: ready.directory });
+        const finish = () => startError
+          ? event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result", id: message.id,
+              ok: false, code: startError, error: "Launch refused" }, "*")
+          : reply(startResult);
+        if (holdStart) pendingStarts.push(finish); else finish();
+        return;
+      }
       if (message.type === "open-url") {
         window.__requests.push({ path: "open-url", body: message.payload });
         if (failOpenUrl) { failOpenUrl = false;
@@ -258,7 +304,20 @@ function hostHtml() {
       }
       if (message.type === "prompt" || message.type === "toast") {
         window.__requests.push({ path: message.type, body: message.payload });
+        if (message.type === "toast" && failToast) { failToast = false;
+          event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result", id: message.id,
+            ok: false, code: "HOST_REJECTED", error: "Toast unavailable" }, "*"); return; }
         reply(message.type === "prompt" ? { sent: "skipped" } : undefined);
+      }
+      if (message.type === "clipboard-write") {
+        window.__requests.push({ path: message.type, body: message.payload });
+        const finish = () => {
+          if (failClipboard) { failClipboard = false;
+            event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result", id: message.id,
+              ok: false, code: "HOST_REJECTED", error: "Clipboard unavailable" }, "*"); }
+          else reply();
+        };
+        if (holdClipboard) pendingClipboard.push(finish); else finish();
       }
     });
     function respondSummary(body, send) {
@@ -349,6 +408,606 @@ async function withPanel(run) {
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
   }
 }
+
+test("one board load requests one listing and one summaries batch", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const paths = await page.evaluate(() => __requests.map((item) => item.path));
+    assert.deepEqual(
+      paths.filter((path) => path.startsWith("/")),
+      ["/changes", "/summaries"],
+    );
+  });
+});
+
+test("four cards arrive together after the listing count and tally", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url + "?hold-summary");
+    const panel = page.frameLocator("iframe");
+    await page.waitForFunction(() => __requests.some((item) => item.path === "/summaries"));
+    assert.equal(await panel.locator(".change-card").count(), 0);
+    assert.equal(
+      await panel.locator(".board-tally").textContent(),
+      "2 changes · 1 of 2 tasks complete",
+    );
+    await page.evaluate(() => {
+      __addSameStage();
+      __recreate("fourth-change");
+      __releaseSummaries();
+    });
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    // The listing remains authoritative: newly appeared batch entries are ignored.
+    assert.equal(await panel.locator(".change-card").count(), 2);
+    await page.evaluate(() => __holdSummaries());
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await page.waitForFunction(
+      () => __requests.filter((item) => item.path === "/summaries").length === 2,
+    );
+    assert.equal(
+      await panel.locator(".board-tally").textContent(),
+      "4 changes · 2 of 4 tasks complete",
+    );
+    assert.equal(await panel.locator(".change-card").count(), 2);
+    await page.evaluate(() => __releaseSummaries());
+    await panel.getByRole("button", { name: "fourth-change", exact: true }).waitFor();
+    assert.equal(await panel.locator(".change-card").count(), 4);
+    assert.deepEqual(await page.evaluate(() => __requests.map((item) => item.path)), [
+      "/changes",
+      "/summaries",
+      "/changes",
+      "/summaries",
+    ]);
+  });
+});
+
+test("whole batch failures retain stale cards and retry; changed roots reload", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    for (const [reply, text] of [
+      ["error", "Batch read failed"],
+      ["malformed", "The local OpenSpec service returned invalid data."],
+    ]) {
+      await page.evaluate((reply) => __batchReply(reply), reply);
+      await panel.getByRole("button", { name: "refresh", exact: true }).click();
+      await panel.getByText(text, { exact: true }).waitFor();
+      assert.equal(await panel.locator(".change-card").count(), 2);
+      await panel.getByRole("button", { name: "Retry", exact: true }).click();
+      await panel.getByText(text, { exact: true }).waitFor({ state: "hidden" });
+      await panel.getByRole("button", { name: "refresh", exact: true }).waitFor();
+    }
+    const before = await page.evaluate(
+      () => __requests.filter((item) => item.path === "/changes").length,
+    );
+    await page.evaluate(() => __batchReply("root"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await page.waitForFunction(
+      (before) => __requests.filter((item) => item.path === "/changes").length === before + 2,
+      before,
+    );
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    assert.equal(await panel.locator(".change-card").count(), 2);
+  });
+});
+
+test("copy change name routes exact IDs through the host with pointer and keyboard feedback", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await panel.getByText("First version of proposal", { exact: true }).waitFor();
+    const copy = panel.getByRole("button", { name: "Copy change name", exact: true });
+    await copy.waitFor({ timeout: 2000 });
+    assert.equal(await copy.getAttribute("title"), "Copy change name");
+    const baseline = await page.evaluate(() => __requests.length);
+    await page.evaluate(() => __holdClipboard());
+    await copy.click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "clipboard-write"));
+    assert.deepEqual(await page.evaluate((start) => __requests.slice(start), baseline), [
+      { path: "clipboard-write", body: { text: "first-change" } },
+    ]);
+    await page.evaluate(() => __releaseClipboard());
+    await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+    assert.deepEqual(await page.evaluate(() => __requests.find((r) => r.path === "toast").body), {
+      kind: "success",
+      message: "Change name copied",
+    });
+    await page.evaluate(() => __failClipboard());
+    await copy.focus();
+    await copy.press("Enter");
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "toast" && r.body.kind === "error"),
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "clipboard-write").length),
+      2,
+    );
+    assert.equal(
+      await page.evaluate(
+        () => __requests.find((r) => r.path === "toast" && r.body.kind === "error").body.message,
+      ),
+      "Clipboard unavailable",
+    );
+    await copy.press("Space");
+    await page.waitForFunction(
+      () => __requests.filter((r) => r.path === "toast" && r.body.kind === "success").length === 2,
+    );
+    assert.deepEqual(
+      await page.evaluate((start) => __requests.slice(start).map((r) => r.path), baseline),
+      ["clipboard-write", "toast", "clipboard-write", "toast", "clipboard-write", "toast"],
+    );
+    assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+  });
+});
+
+test("copy change name keeps badges below the wrapping name and above the goal", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const name = "long-change-" + "title-".repeat(20) + "end";
+    await page.evaluate((name) => {
+      __rename("first-change", name);
+      __areas(name, ["area".repeat(40), "Several words in another affected area", "third"]);
+    }, name);
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name, exact: true }).click();
+    await panel.getByText("First version of proposal", { exact: true }).waitFor();
+    for (const width of [1076, 320]) {
+      await page.setViewportSize({ width, height: 700 });
+      const layout = await panel.locator(".detail").evaluate((detail) => {
+        const group = detail.querySelector(".detail-name-group");
+        const title = detail.querySelector("h1");
+        const copy = detail.querySelector('[aria-label="Copy change name"]');
+        const areas = detail.querySelector(".affected-areas");
+        const goal = detail.querySelector(".goal");
+        const bounds = (node) => node.getBoundingClientRect();
+        return {
+          grouped: group.contains(title) && group.contains(copy) && !group.contains(areas),
+          ordered:
+            bounds(areas).top >= bounds(group).bottom && bounds(goal).top >= bounds(areas).bottom,
+          visible:
+            bounds(copy).width > 0 && bounds(copy).left >= 0 && bounds(copy).right <= innerWidth,
+          wraps: bounds(title).height > parseFloat(getComputedStyle(title).lineHeight),
+          badgeWraps: bounds(areas.children[1]).top > bounds(areas.children[0]).top,
+          overflow: document.body.scrollWidth > innerWidth,
+        };
+      });
+      assert.equal(layout.grouped, true);
+      assert.equal(layout.ordered, true);
+      assert.equal(layout.visible, true);
+      assert.equal(layout.overflow, false);
+      if (width === 320) {
+        assert.equal(layout.wraps, true);
+        assert.equal(layout.badgeWraps, true);
+      }
+    }
+    await panel.getByRole("button", { name: "Copy change name" }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+    assert.equal(
+      await page.evaluate(() => __requests.find((r) => r.path === "clipboard-write").body.text),
+      name,
+    );
+  });
+});
+
+test("copy change name retains focus during reads and captures navigation, refresh and unavailable IDs", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => {
+      __holdProposal();
+      __holdTasks();
+      __holdClipboard();
+    });
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    const copy = panel.getByRole("button", { name: "Copy change name", exact: true });
+    await copy.focus();
+    await copy.evaluate((button) => {
+      window.__copyButton = button;
+    });
+    await page.waitForFunction(() => __requests.some((r) => r.path === "/document"));
+    await page.evaluate(() => {
+      __releaseFile();
+      __releaseFile();
+    });
+    await panel.getByText("First version of proposal", { exact: true }).waitFor();
+    await page.waitForFunction(
+      () =>
+        __requests.some(
+          (r) =>
+            r.path === "/document" &&
+            r.body.change === "first-change" &&
+            r.body.selector === "specs/3.md",
+        ) &&
+        __completed.filter((path) => path === "/document").length ===
+          __requests.filter((r) => r.path === "/document").length,
+    );
+    assert.ok(
+      await copy.evaluate(
+        (button) => button === window.__copyButton && button === document.activeElement,
+      ),
+    );
+    await copy.press("Enter");
+    await page.waitForFunction(() => __requests.some((r) => r.path === "clipboard-write"));
+    await panel.getByRole("button", { name: "Back to changes" }).click();
+    await panel.getByRole("button", { name: "second-change", exact: true }).click();
+    await page.evaluate(() => {
+      __releaseReads();
+      __releaseClipboard();
+    });
+    await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+    await page.waitForFunction(
+      () =>
+        __requests.some(
+          (r) =>
+            r.path === "/document" &&
+            r.body.change === "second-change" &&
+            r.body.selector === "specs/3.md",
+        ) &&
+        __completed.filter((path) => path === "/document").length ===
+          __requests.filter((r) => r.path === "/document").length,
+    );
+    await page.evaluate(() => __failToast());
+    let before = await page.evaluate(() => __requests.length);
+    await copy.click();
+    await page.waitForFunction(
+      (before) => __requests.slice(before).some((r) => r.path === "toast"),
+      before,
+    );
+    assert.deepEqual(
+      await page.evaluate((before) => __requests.slice(before).map((r) => r.path), before),
+      ["clipboard-write", "toast"],
+    );
+    await page.evaluate(() => __holdListing());
+    await panel
+      .getByRole("button", { name: "refresh", exact: true })
+      .evaluate((button) => button.click());
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/changes").length === 2);
+    before = await page.evaluate(() => __requests.length);
+    await copy.click();
+    await page.waitForFunction(
+      (before) => __requests.slice(before).some((r) => r.path === "toast"),
+      before,
+    );
+    assert.deepEqual(
+      await page.evaluate((before) => __requests.slice(before).map((r) => r.path), before),
+      ["clipboard-write", "toast"],
+    );
+    await page.evaluate(() => {
+      __unavailable();
+      __releaseListing();
+    });
+    await panel
+      .getByText("This change is no longer available. Refresh or return to the board.", {
+        exact: true,
+      })
+      .waitFor();
+    before = await page.evaluate(() => __requests.length);
+    await copy.click();
+    await page.waitForFunction(
+      (before) => __requests.slice(before).some((r) => r.path === "toast"),
+      before,
+    );
+    assert.deepEqual(
+      await page.evaluate((before) => __requests.slice(before).map((r) => r.path), before),
+      ["clipboard-write", "toast"],
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => r.path === "clipboard-write").map((r) => r.body.text),
+      ),
+      ["first-change", "second-change", "second-change", "second-change"],
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          __requests.filter((r) => ["compose", "prompt", "start-session"].includes(r.path)).length,
+      ),
+      0,
+    );
+    assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+  });
+});
+
+test("archive all uses secondary controls and requires cancellable confirmation", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const archive = panel.getByRole("button", { name: "archive all", exact: true });
+    assert.equal(await archive.count(), 1);
+    assert.equal(await archive.isDisabled(), true);
+    await page.evaluate(() => __edit("Completed"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await archive.waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 2);
+    assert.equal(await archive.isEnabled(), true);
+    assert.equal(await archive.getAttribute("data-variant"), "secondary");
+    assert.equal(await archive.locator('svg[aria-hidden="true"]').count(), 1);
+    assert.ok(
+      await archive.evaluate((node) =>
+        node.parentElement.nextElementSibling.textContent.includes("new change"),
+      ),
+    );
+    await panel.locator('input[aria-label="Search changes"]').fill("no match");
+    assert.equal(await archive.isEnabled(), true);
+    await archive.click();
+    const dialog = panel.getByRole("dialog", { name: "Archive all completed changes?" });
+    await dialog.waitFor();
+    assert.ok(
+      await dialog.evaluate(
+        (node) => node.getBoundingClientRect().right <= 320 && node.scrollWidth <= node.clientWidth,
+      ),
+    );
+    assert.equal(
+      await dialog
+        .getByRole("button", { name: "cancel", exact: true })
+        .evaluate((node) => node === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("Tab");
+    assert.equal(
+      await dialog
+        .getByRole("button", { name: "start archiving", exact: true })
+        .evaluate((node) => node === document.activeElement),
+      true,
+    );
+    assert.match(await dialog.textContent(), /new session.*sends a prompt/s);
+    assert.equal(
+      await page.evaluate(
+        () => __requests.filter((r) => ["start-session", "prompt"].includes(r.path)).length,
+      ),
+      0,
+    );
+    await dialog.getByRole("button", { name: "cancel", exact: true }).click();
+    assert.equal(await archive.evaluate((node) => node === document.activeElement), true);
+    await archive.click();
+    await dialog.getByRole("button", { name: "start archiving", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    assert.equal(await dialog.count(), 0);
+    assert.equal(
+      await page.evaluate(
+        () => __requests.filter((r) => ["start-session", "prompt"].includes(r.path)).length,
+      ),
+      0,
+    );
+    assert.ok(await panel.locator("body").evaluate((node) => node.scrollWidth <= 320));
+  });
+});
+
+async function readyArchive(page, url) {
+  await page.goto(url);
+  const panel = page.frameLocator("iframe");
+  await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+  await page.evaluate(() => __edit("Completed"));
+  await panel.getByRole("button", { name: "refresh", exact: true }).click();
+  await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 2);
+  return panel;
+}
+
+async function confirmArchive(panel) {
+  await panel.getByRole("button", { name: "archive all", exact: true }).click();
+  await panel
+    .getByRole("dialog", { name: "Archive all completed changes?" })
+    .getByRole("button", { name: "start archiving", exact: true })
+    .click();
+}
+
+test("archive all submits one completed-only prompt and preserves rail/page fresh-chat drafts", async () => {
+  await withPanel(async (browser, url) => {
+    for (const surface of ["panel", "page"]) {
+      const page = await browser.newPage();
+      const panel = await readyArchive(page, url);
+      await page.evaluate((surface) => {
+        __surface(surface);
+        __session(null);
+      }, surface);
+      const before = await page.evaluate(() => __requests.length);
+      await confirmArchive(panel);
+      await page.waitForFunction(() => __requests.some((r) => r.path === "start-session"));
+      assert.equal(
+        await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
+        1,
+      );
+      const requests = await page.evaluate((before) => __requests.slice(before), before);
+      assert.deepEqual(
+        requests.filter((r) => r.path !== "toast").map((r) => r.path),
+        ["start-session"],
+      );
+      const launch = requests.find((r) => r.path === "start-session");
+      assert.equal(launch.directory, directory);
+      assert.equal(launch.body.navigation, "preserve");
+      assert.equal(launch.body.worktree, undefined);
+      assert.equal(launch.body.projectId, undefined);
+      assert.equal(launch.body.providerId, "openspec-board");
+      assert.ok(launch.body.text.length < 16000);
+      for (const pattern of [
+        /openspec list --json/,
+        /openspec status/,
+        /CLI-reported task/,
+        /positive task total/,
+        /done.*skipped/s,
+        /sequentially/,
+        /openspec-archive-change/,
+        /unfinished/,
+        /unavailable/,
+        /unreadable/,
+        /verification/,
+        /sync.*choices/s,
+        /archived.*skipped.*blocked/s,
+        /none qualify.*no.*mutations/s,
+      ])
+        assert.match(launch.body.text, pattern);
+      assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+      assert.equal(await panel.locator(".board-shell").isVisible(), true);
+      await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+      assert.match(
+        await page.evaluate(() => __requests.find((r) => r.path === "toast").body.message),
+        /submitted/,
+      );
+      await page.close();
+    }
+  });
+});
+
+test("archive all disables loading and absent contexts and invalidates old confirmations", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    const panel = await readyArchive(page, url);
+    const archive = panel.getByRole("button", { name: "archive all", exact: true });
+    await page.evaluate(() => __holdListing());
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    assert.equal(await archive.isDisabled(), true);
+    await page.evaluate(() => __releaseListing());
+    await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 3);
+    await archive.click();
+    await page.evaluate(() => __root("replacement-root"));
+    await panel.locator("dialog[open]").evaluate(() => {
+      // Refresh remains possible through controller callbacks while a modal is open.
+      document.querySelector(".refresh-control button").click();
+    });
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/changes").length >= 4);
+    await panel.locator("dialog[open]").waitFor({ state: "hidden" });
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
+      0,
+    );
+    await page.evaluate(() => __directory(null));
+    await page.waitForTimeout(30);
+    assert.equal(await archive.isDisabled(), true);
+  });
+});
+
+test("archive all holds one launch and discards late feedback without refresh or replay", async () => {
+  await withPanel(async (browser, url) => {
+    for (const replacement of ["session", "directory", "root", "dispose"]) {
+      const page = await browser.newPage();
+      const panel = await readyArchive(page, url);
+      await page.evaluate(() => __holdStart());
+      await confirmArchive(panel);
+      const archive = panel.getByRole("button", { name: "archive all", exact: true });
+      assert.equal(await archive.isDisabled(), true);
+      const reads = await page.evaluate(
+        () => __requests.filter((r) => r.path.startsWith("/")).length,
+      );
+      await archive.evaluate((node) => node.click());
+      assert.equal(
+        await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
+        1,
+      );
+      if (replacement === "session") await page.evaluate(() => __session("other-session"));
+      if (replacement === "directory") await page.evaluate(() => __directory("/tmp/other-project"));
+      if (replacement === "root") {
+        await page.evaluate(() => __root("other-root"));
+        await panel.getByRole("button", { name: "refresh", exact: true }).click();
+        await page.waitForFunction(
+          () => __requests.filter((r) => r.path === "/changes").length >= 4,
+        );
+      }
+      if (replacement === "dispose")
+        await panel.locator("body").evaluate(() => window.dispatchEvent(new Event("pagehide")));
+      await page.evaluate(() => __releaseStart());
+      await page.waitForTimeout(50);
+      assert.equal(
+        await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
+        1,
+      );
+      assert.equal(
+        await page.evaluate(() => __requests.filter((r) => r.path === "toast").length),
+        0,
+      );
+      assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+      if (replacement === "session") {
+        assert.equal(
+          await page.evaluate(() => __requests.filter((r) => r.path.startsWith("/")).length),
+          reads,
+        );
+        assert.equal(await archive.isEnabled(), true);
+      }
+      await page.close();
+    }
+  });
+});
+
+test("archive all reports partial and uncertain launches without automatic retry", async () => {
+  await withPanel(async (browser, url) => {
+    const cases = [
+      {
+        sent: "sent",
+        linked: false,
+        match: /submitted.*reference could not be saved/,
+        kind: "info",
+      },
+      ...["no-model", "failed", "skipped"].map((sent) => ({
+        sent,
+        linked: false,
+        match: /archive-session.*not submitted successfully/,
+        kind: "error",
+      })),
+      { error: "NOT_GRANTED", match: /launch failed.*Launch refused/, kind: "error" },
+      {
+        error: "HOST_TIMEOUT",
+        match: /uncertain.*may already exist.*Inspect sessions/,
+        kind: "error",
+        persistent: true,
+      },
+      {
+        error: "DISCONNECTED",
+        match: /uncertain.*may already exist/,
+        kind: "error",
+        persistent: true,
+      },
+      { nullSession: true, match: /could not be created.*Inspect sessions/, kind: "error" },
+    ];
+    for (const entry of cases) {
+      const page = await browser.newPage();
+      const panel = await readyArchive(page, url);
+      await page.evaluate((entry) => {
+        if (entry.error) __startError(entry.error);
+        else
+          __startResult(
+            entry.nullSession
+              ? {
+                  sessionId: null,
+                  sent: "skipped",
+                  directory: "/tmp/fixture-project",
+                  worktree: { directory: "/tmp/worktree", branch: "test" },
+                  failure: "session-create-failed",
+                }
+              : { sessionId: "archive-session", sent: entry.sent, linked: entry.linked },
+          );
+      }, entry);
+      await confirmArchive(panel);
+      await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+      const toast = await page.evaluate(() => __requests.find((r) => r.path === "toast").body);
+      assert.match(toast.message, entry.match);
+      assert.equal(toast.kind, entry.kind);
+      if (entry.persistent) assert.equal(toast.persistent, true);
+      assert.equal(
+        await page.evaluate(
+          () =>
+            __requests.filter((r) => ["start-session", "prompt", "compose"].includes(r.path))
+              .length,
+        ),
+        1,
+      );
+      assert.equal(await panel.locator(".board-shell").isVisible(), true);
+      await page.close();
+    }
+  });
+});
 
 test("Markdown panel links use SDK feedback and unchanged DOM survives sibling reads and themes", async () => {
   await withPanel(async (browser, url) => {
@@ -483,9 +1142,9 @@ test("affected areas are neutral literal read-only badges on cards and detail", 
       await panel.locator(".detail-title-group").evaluate((group) => {
         const title = group.querySelector("h1").getBoundingClientRect();
         const areas = group.querySelector(".affected-areas").getBoundingClientRect();
-        return areas.left > title.right && areas.top < title.bottom;
+        return areas.top >= title.bottom;
       }),
-      "detail areas sit beside the title on a wide layout",
+      "detail areas sit below the title on a wide layout",
     );
     assert.ok(
       await panel
@@ -550,7 +1209,7 @@ test("affected area refresh retains handles and focus, wraps labels and discards
     await panel
       .getByRole("button", { name: "refresh", exact: true })
       .evaluate((button) => button.click());
-    await page.waitForFunction((before) => __requests.length >= before + 8, before);
+    await page.waitForFunction((before) => __requests.length >= before + 7, before);
     await panel.getByRole("button", { name: "refresh", exact: true }).waitFor();
     assert.ok(
       await panel
@@ -570,8 +1229,8 @@ test("affected area refresh retains handles and focus, wraps labels and discards
       before,
     );
     assert.equal(requests.filter((path) => path === "/changes").length, 1);
-    assert.equal(requests.filter((path) => path === "/summary").length, 2);
-    assert.equal(requests.length, 8);
+    assert.equal(requests.filter((path) => path === "/summaries").length, 1);
+    assert.equal(requests.length, 7);
     await page.evaluate((id) => __areas(id, ["replacement"]), longTitle);
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await panel
@@ -591,7 +1250,7 @@ test("affected area refresh retains handles and focus, wraps labels and discards
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await page.waitForFunction(
-      () => __requests.filter((request) => request.path === "/summary").length >= 12,
+      () => __requests.filter((request) => request.path === "/summaries").length >= 6,
     );
     await page.evaluate(() => __directory("/tmp/other-project"));
     await panel.getByText("other-project", { exact: true }).waitFor();
@@ -682,8 +1341,7 @@ test("explicit Refresh retains opened-change observations until a new opening", 
     await panel.getByRole("button", { name: "first-change" }).waitFor();
     assert.deepEqual(await page.evaluate(() => __requests.map((request) => request.path)), [
       "/changes",
-      "/summary",
-      "/summary",
+      "/summaries",
     ]);
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByText("First version of proposal").waitFor();
@@ -754,7 +1412,7 @@ test("board actions and detail back/stage controls use the compact viewer layout
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "first-change" }).waitFor();
-    assert.equal(await panel.locator(".toolbar .heading-actions button").count(), 3);
+    assert.equal(await panel.locator(".toolbar .heading-actions button").count(), 4);
     await panel.getByRole("button", { name: "new change" }).waitFor();
     assert.equal(
       await panel.locator(".board-tally").innerText(),
@@ -1306,7 +1964,7 @@ test("create dialogue keeps concise actions and a width-stable busy button", asy
           .evaluate((button) => button.getBoundingClientRect().height),
         28,
       );
-      await panel.getByLabel("Change name").fill("created-change");
+      await panel.getByLabel("Change name", { exact: true }).fill("created-change");
       await panel.getByLabel("Goal").fill("Test creation");
       await page.evaluate(() => __holdCreate());
       await create.click();
@@ -1357,7 +2015,7 @@ test("numeric-prefixed names are created and shown on the board", async () => {
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("100-add-feature");
+    await panel.getByLabel("Change name", { exact: true }).fill("100-add-feature");
     await panel.getByLabel("Goal").fill("Numeric change");
     await panel.getByRole("button", { name: "create", exact: true }).click();
     await panel.getByRole("button", { name: "100-add-feature" }).waitFor();
@@ -1375,7 +2033,7 @@ test("safe creation refreshes the board and prompts stay unsent", async () => {
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("created-change");
+    await panel.getByLabel("Change name", { exact: true }).fill("created-change");
     await panel.getByLabel("Goal").fill("Test creation");
     await panel.getByRole("button", { name: "create", exact: true }).click();
     await panel.getByRole("button", { name: "created-change" }).waitFor();
@@ -1739,7 +2397,7 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
   });
 });
 
-test("board header keeps Help, Refresh and New change in order at both widths", async () => {
+test("board header keeps Help, Refresh, Archive all and New change in order at both widths", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
     await page.goto(url);
@@ -1751,11 +2409,11 @@ test("board header keeps Help, Refresh and New change in order at both widths", 
         await actions.evaluateAll((buttons) =>
           buttons.map((button) => button.getAttribute("aria-label") || button.textContent.trim()),
         ),
-        ["OpenSpec quickstart", "refresh", "new change"],
+        ["OpenSpec quickstart", "refresh", "archive all", "new change"],
       );
       assert.deepEqual(
         await actions.evaluateAll((buttons) => buttons.map((button) => button.dataset.variant)),
-        ["ghost", "ghost", "default"],
+        ["ghost", "ghost", "secondary", "default"],
       );
       assert.equal(
         await panel.locator("html").evaluate((node) => node.scrollWidth > innerWidth),
@@ -2188,7 +2846,7 @@ test("pre-removal summary cannot restore a deleted card, but a new listing can s
     await panel.getByRole("button", { name: "Back to changes" }).click();
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await page.waitForFunction(
-      () => __requests.filter((item) => item.path === "/summary").length >= 4,
+      () => __requests.filter((item) => item.path === "/summaries").length >= 2,
     );
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.locator(".detail-toolbar").getByRole("button", { name: "Delete change" }).click();
@@ -2486,7 +3144,7 @@ test("a refreshed incomplete summary removes Archive from an already open detail
       __holdSummaries();
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
-    await page.waitForFunction(() => __requests.filter((r) => r.path === "/summary").length >= 6);
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/summaries").length >= 3);
     await panel.getByRole("button", { name: "first-change" }).click();
     assert.equal(await panel.locator(".stage-label").innerText(), "Complete");
     await page.evaluate(() => __releaseSummaries());
@@ -2519,7 +3177,7 @@ test("readiness-only summary changes update focused tab names without losing foc
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await page.waitForFunction(
-      () => __requests.filter((item) => item.path === "/summary").length >= 4,
+      () => __requests.filter((item) => item.path === "/summaries").length >= 2,
     );
     await panel.getByRole("button", { name: "first-change" }).click();
     const proposal = panel.getByRole("tab", { name: /Proposal · Written/ });
@@ -2663,7 +3321,7 @@ test("a first-load summary failure names the unreadable change and offers retry"
   });
 });
 
-test("focused Retry keeps keyboard focus while an unrelated held summary completes", async () => {
+test("focused Retry keeps keyboard focus when a held batch retains a per-change failure", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
     await page.goto(url + "?fail-summary");
@@ -2673,13 +3331,16 @@ test("focused Retry keeps keyboard focus while an unrelated held summary complet
     await page.evaluate(() => __holdSummaries());
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await page.waitForFunction(
-      () => __requests.filter((item) => item.path === "/summary").length === 4,
+      () => __requests.filter((item) => item.path === "/summaries").length === 2,
     );
     const retry = panel.locator(".board-notices").getByRole("button", { name: "Retry" });
     await retry.focus();
-    await page.evaluate(() => __releaseOneSummary(1));
+    await page.evaluate(() => {
+      __failSummary();
+      __releaseSummaries();
+    });
     await page.waitForFunction(
-      () => __completed.filter((path) => path === "/summary").length === 3,
+      () => __completed.filter((path) => path === "/summaries").length === 2,
     );
     await retry.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
     assert.equal(await retry.evaluate((node) => node === document.activeElement), true);
@@ -3204,7 +3865,7 @@ test("uncertain creation reconciles in the original context and opens the observ
     await panel.getByRole("button", { name: "new change" }).waitFor();
     await page.evaluate(() => __unknownCreate());
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("observed-change");
+    await panel.getByLabel("Change name", { exact: true }).fill("observed-change");
     await panel.getByLabel("Goal").fill("Observe before retry");
     await panel.getByRole("button", { name: "create", exact: true }).click();
     await panel.getByRole("button", { name: "Inspect change" }).click();
@@ -3235,7 +3896,7 @@ test("malformed creation replies reconcile instead of permitting another write",
       const panel = page.frameLocator("iframe");
       await page.evaluate((value) => __createReply(value), reply);
       await panel.getByRole("button", { name: "new change" }).click();
-      await panel.getByLabel("Change name").fill(`created-${reply}`);
+      await panel.getByLabel("Change name", { exact: true }).fill(`created-${reply}`);
       await panel.getByLabel("Goal").fill("Retain uncertain write");
       await panel.getByRole("button", { name: "create", exact: true }).click();
       await panel.getByRole("button", { name: "Inspect change" }).waitFor({ timeout: 5000 });
@@ -3268,7 +3929,7 @@ test("failed creation reconciliation survives dismissal and closes safely across
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("uncertain-change");
+    await panel.getByLabel("Change name", { exact: true }).fill("uncertain-change");
     await panel.getByLabel("Goal").fill("Retain the draft");
     await page.evaluate(() => {
       __createReply("null");
@@ -3279,7 +3940,10 @@ test("failed creation reconciliation survives dismissal and closes safely across
     assert.equal(await panel.getByRole("button", { name: "Dismiss attempt" }).isVisible(), false);
     await panel.getByRole("button", { name: "cancel", exact: true }).click();
     await panel.getByRole("button", { name: "new change" }).click();
-    assert.equal(await panel.getByLabel("Change name").inputValue(), "uncertain-change");
+    assert.equal(
+      await panel.getByLabel("Change name", { exact: true }).inputValue(),
+      "uncertain-change",
+    );
     assert.equal(
       await panel.getByRole("button", { name: "create", exact: true }).isDisabled(),
       true,
@@ -3312,7 +3976,7 @@ test("creation no-match reconciliation permits only explicit resubmission and kn
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("not-created");
+    await panel.getByLabel("Change name", { exact: true }).fill("not-created");
     await panel.getByLabel("Goal").fill("A retained draft");
     await page.evaluate(() => __createReply("invalid-json", false));
     await panel.getByRole("button", { name: "create", exact: true }).click();
@@ -3330,7 +3994,7 @@ test("creation no-match reconciliation permits only explicit resubmission and kn
       2,
     );
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("known-rejected");
+    await panel.getByLabel("Change name", { exact: true }).fill("known-rejected");
     await panel.getByLabel("Goal").fill("Retain on rejection");
     await page.evaluate(() => __createReply("known-error", false));
     await panel.getByRole("button", { name: "create", exact: true }).click();
@@ -3352,7 +4016,7 @@ test("uncertain creation still inspects while board summaries are pending", asyn
     const create = panel.getByRole("button", { name: "new change" });
     await create.waitFor();
     await create.click();
-    await panel.getByLabel("Change name").fill("observed-while-loading");
+    await panel.getByLabel("Change name", { exact: true }).fill("observed-while-loading");
     await panel.getByLabel("Goal").fill("Confirm a pending write");
     await page.evaluate(() => __unknownCreate());
     await panel.getByRole("button", { name: "create", exact: true }).click();
@@ -3376,7 +4040,7 @@ test("uncertain creation checks its original project after the selected project 
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     await panel.getByRole("button", { name: "new change" }).click();
-    await panel.getByLabel("Change name").fill("observed-after-switch");
+    await panel.getByLabel("Change name", { exact: true }).fill("observed-after-switch");
     await panel.getByLabel("Goal").fill("Keep the original scope");
     await page.evaluate(() => {
       __unknownCreate();

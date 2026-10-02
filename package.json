@@ -29,7 +29,8 @@
       },
       "page": true,
       "capabilities": [
-        "prompt"
+        "prompt",
+        "sessions"
       ],
       "service": {
         "entry": "service/main.js",

@@ -2,7 +2,7 @@ import type { HostClient } from "@openchamber/sdk";
 import {
   decodeTaskResponse,
   decodeListing,
-  decodeSummary,
+  decodeSummaries,
   type Task,
   type ListingEntry,
 } from "../contracts.js";
@@ -81,13 +81,40 @@ export function createClient(host: HostClient) {
         throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
       return listing;
     },
-    summary: async (scope: Scope, entry: ListingEntry): Promise<ChangeSummary> => {
+    summaries: async (
+      scope: Scope,
+      entries: ListingEntry[],
+    ): Promise<
+      ({ id: string; summary: ChangeSummary } | { id: string; error: ServiceRequestError })[]
+    > => {
       const value = decode(
-        await request("/summary", { ...scope, expectedRoot: scope.root, change: entry.id }),
-        decodeSummary,
+        await request("/summaries", { directory: scope.directory, expectedRoot: scope.root }),
+        decodeSummaries,
       );
-      if (value.id !== entry.id || value.root !== scope.root) throw invalid();
-      return { ...value, completedTasks: entry.completedTasks, totalTasks: entry.totalTasks };
+      if (value.root !== scope.root)
+        throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+      const byId = new Map(value.changes.map((item) => [item.id, item]));
+      return entries.map((entry) => {
+        const item = byId.get(entry.id);
+        if (!item)
+          return {
+            id: entry.id,
+            error: new ServiceRequestError("CHANGE_UNAVAILABLE", "Change is no longer listed."),
+          };
+        if ("error" in item)
+          return {
+            id: entry.id,
+            error: new ServiceRequestError(item.error.code, item.error.message),
+          };
+        return {
+          id: entry.id,
+          summary: {
+            ...item.summary,
+            completedTasks: entry.completedTasks,
+            totalTasks: entry.totalTasks,
+          },
+        };
+      });
     },
     tasks: async (scope: Scope, change: string): Promise<Task[]> => {
       return decode(

@@ -1688,6 +1688,27 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       throw new Error("Duplicate task.");
     return tasks;
   }
+  function decodeSummaries(value) {
+    const input = record(value);
+    const root2 = string(input.root);
+    if (!Array.isArray(input.changes)) throw new Error("Invalid summaries.");
+    const changes = input.changes.map((value2) => {
+      const item = record(value2);
+      const id = string(item.id);
+      if (!isChangeName(id) || "summary" in item === "error" in item)
+        throw new Error("Invalid summary entry.");
+      if ("summary" in item) {
+        const summary = decodeSummary(item.summary);
+        if (summary.id !== id || summary.root !== root2) throw new Error("Invalid summary scope.");
+        return { id, summary };
+      }
+      const error = record(item.error);
+      return { id, error: { code: string(error.code), message: string(error.message) } };
+    });
+    if (new Set(changes.map((entry) => entry.id)).size !== changes.length)
+      throw new Error("Duplicate change.");
+    return { root: root2, changes };
+  }
   function decodeTaskResponse(value) {
     const item = record(value);
     return decodeTasks(item.tasks);
@@ -1752,13 +1773,35 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
         return listing;
       },
-      summary: async (scope, entry) => {
+      summaries: async (scope, entries2) => {
         const value = decode(
-          await request("/summary", { ...scope, expectedRoot: scope.root, change: entry.id }),
-          decodeSummary
+          await request("/summaries", { directory: scope.directory, expectedRoot: scope.root }),
+          decodeSummaries
         );
-        if (value.id !== entry.id || value.root !== scope.root) throw invalid();
-        return { ...value, completedTasks: entry.completedTasks, totalTasks: entry.totalTasks };
+        if (value.root !== scope.root)
+          throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+        const byId = new Map(value.changes.map((item) => [item.id, item]));
+        return entries2.map((entry) => {
+          const item = byId.get(entry.id);
+          if (!item)
+            return {
+              id: entry.id,
+              error: new ServiceRequestError("CHANGE_UNAVAILABLE", "Change is no longer listed.")
+            };
+          if ("error" in item)
+            return {
+              id: entry.id,
+              error: new ServiceRequestError(item.error.code, item.error.message)
+            };
+          return {
+            id: entry.id,
+            summary: {
+              ...item.summary,
+              completedTasks: entry.completedTasks,
+              totalTasks: entry.totalTasks
+            }
+          };
+        });
       },
       tasks: async (scope, change) => {
         return decode(
@@ -1979,6 +2022,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   var paths = {
     refresh: "M20 11a8 8 0 1 1-2.4-5.7M20 4v5h-5",
     create: "M12 5v14M5 12h14",
+    copy: "M9 9h11v11H9zM15 9V4H4v11h5",
+    archive: "M3 4h18v4H3zM5 8v12h14V8M10 12h4",
     delete: "M4 7h16M10 4h4m4 3-1 13H7L6 7m4 4v5m4-5v5"
   };
   function addButtonIcon(root2, name) {
@@ -2052,6 +2097,15 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       onClick: callbacks.create
     });
     addButtonIcon(newChangeRoot, "create");
+    const archiveRoot = document.createElement("span");
+    const archive = mountButton(archiveRoot, {
+      label: "archive all",
+      variant: "secondary",
+      size: "sm",
+      disabled: true,
+      onClick: callbacks.archive
+    });
+    addButtonIcon(archiveRoot, "archive");
     const toolbar = document.createElement("div");
     toolbar.className = "toolbar";
     const tally = document.createElement("span");
@@ -2069,7 +2123,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     addButtonIcon(refreshRoot, "refresh");
     const helpRoot = document.createElement("span");
     const help = mountHelpButton(helpRoot, callbacks.help);
-    headingActions.append(helpRoot, refreshRoot, newChangeRoot);
+    headingActions.append(helpRoot, refreshRoot, archiveRoot, newChangeRoot);
     const searchRoot = document.createElement("span");
     searchRoot.className = "board-search";
     let searchValue = "";
@@ -2206,6 +2260,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       update(state) {
         project.textContent = state.directory?.split("/").filter(Boolean).at(-1) ?? "No project selected";
         newChange.update({ disabled: !state.canCreate });
+        archive.update({ disabled: !state.canArchive, loading: state.archivePending });
         if (searchValue !== state.search) {
           searchValue = state.search;
           search.update({ value: searchValue });
@@ -2294,6 +2349,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         }
         cards.clear();
         newChange.dispose();
+        archive.dispose();
         refresh.dispose();
         help.dispose();
         search.dispose();
@@ -5911,7 +5967,22 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     shell.setAttribute("aria-labelledby", title.id);
     const titleGroup = document.createElement("div");
     titleGroup.className = "detail-title-group";
-    titleGroup.append(title);
+    const nameGroup = document.createElement("div");
+    nameGroup.className = "detail-name-group";
+    const copyRoot = document.createElement("span");
+    copyRoot.className = "detail-copy";
+    const copy = mountButton(copyRoot, {
+      label: "",
+      variant: "ghost",
+      size: "sm",
+      onClick: callbacks.copyName
+    });
+    const copyButton = copyRoot.querySelector("button");
+    copyButton.setAttribute("aria-label", "Copy change name");
+    copyButton.title = "Copy change name";
+    addButtonIcon(copyRoot, "copy");
+    nameGroup.append(title, copyRoot);
+    titleGroup.append(nameGroup);
     const areas = mountAreaBadges(titleGroup);
     titleRow.append(backRoot, titleGroup);
     const headingActions = document.createElement("div");
@@ -6178,6 +6249,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       dispose() {
         reset();
         back.dispose();
+        copy.dispose();
         refresh.dispose();
         retry.dispose();
         deleteAction.dispose();
@@ -6596,6 +6668,80 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     };
   }
 
+  // src/panel/archive-dialog.ts
+  function mountArchiveDialog(root2, callbacks) {
+    const dialog = document.createElement("dialog");
+    const heading = document.createElement("h2");
+    heading.id = "archive-all-title";
+    heading.textContent = "Archive all completed changes?";
+    dialog.setAttribute("aria-labelledby", heading.id);
+    const description = document.createElement("p");
+    description.id = "archive-all-description";
+    description.textContent = "This creates a new session and sends a prompt to archive completed changes in this project. Unfinished changes will be skipped. The board stays open; use refresh to see updates.";
+    dialog.setAttribute("aria-describedby", description.id);
+    const actions = document.createElement("div");
+    actions.className = "archive-actions";
+    const cancelRoot = document.createElement("span");
+    const startRoot = document.createElement("span");
+    let origin = null;
+    let opener = null;
+    function close() {
+      dialog.close();
+      origin = null;
+      if (opener?.isConnected) opener.focus();
+      opener = null;
+    }
+    const cancel = mountButton(cancelRoot, {
+      label: "cancel",
+      variant: "secondary",
+      size: "sm",
+      onClick: close
+    });
+    const start = mountButton(startRoot, {
+      label: "start archiving",
+      size: "sm",
+      onClick: () => {
+        if (!origin || origin !== callbacks.current() || !callbacks.canStart()) return;
+        close();
+        callbacks.start();
+      }
+    });
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close();
+    });
+    actions.append(cancelRoot, startRoot);
+    dialog.append(heading, description, actions);
+    root2.append(dialog);
+    return {
+      open() {
+        if (!callbacks.canStart()) return;
+        origin = callbacks.current();
+        opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        dialog.showModal();
+        cancelRoot.querySelector("button")?.focus();
+      },
+      update() {
+        if (dialog.open && origin !== callbacks.current()) close();
+        start.update({ disabled: !callbacks.canStart() });
+      },
+      dispose() {
+        cancel.dispose();
+        start.dispose();
+        dialog.remove();
+      }
+    };
+  }
+
+  // src/panel/archive-prompt.ts
+  var archiveAllPrompt = `Archive all completed OpenSpec changes in this session's project/worktree.
+
+Run openspec list --json for a fresh active-change listing and resolve its OpenSpec planning context, honouring declared stores and the selected CLI root. Inspect each change with openspec status --change "<name>" --json and current CLI-reported task counts. Only changes with every applicable planning artefact done or explicitly skipped, a positive task total, and all tasks complete qualify. Skip unfinished, zero-task, unavailable or unreadable changes. Never use an incomplete-work warning override or infer successful verification from a Complete card or task counts.
+
+Process qualifying changes sequentially using the openspec-archive-change skill for each named change. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
+
+Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`;
+
   // src/panel/controller.ts
   function mountController(host2, appRoot) {
     const client = createClient(host2);
@@ -6629,6 +6775,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     let detailOpening = 0;
     let readGeneration = 0;
     let boardScroll = 0;
+    let archivePending = false;
+    let disposed = false;
     function invalidate() {
       epoch++;
       boardOperation++;
@@ -6713,76 +6861,76 @@ Please report this to https://github.com/markedjs/marked.`, e) {
           pendingSummaries = listedCount;
           settled = true;
           render();
-          let next = 0;
-          async function worker() {
-            while (next < listing.changes.length && epoch === startingEpoch && scope === current && operation === boardOperation) {
-              const entry = listing.changes[next++];
-              try {
-                const summary = await client.summary(current, entry);
-                if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
-                  return;
-                const derived = deriveChange(summary);
-                changes = [...changes.filter((item) => item.id !== derived.id), derived].sort(
-                  (a, b) => a.id.localeCompare(b.id)
-                );
-                unavailableIds.delete(derived.id);
-                if (selectedChange?.id === derived.id) {
-                  selectedChange = derived;
-                  if (refresh) {
-                    const owner = taskArtifact(derived);
-                    const valid = derived.artifacts.some(
-                      (item) => item.id === (activeView === "tasks" ? owner : selectedArtifact)
+          const summaries = await client.summaries(current, listing.changes);
+          if (epoch !== startingEpoch || scope !== current || operation !== boardOperation) return;
+          for (const entry of summaries) {
+            try {
+              if ("error" in entry) throw entry.error;
+              const summary = entry.summary;
+              if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
+                return;
+              const derived = deriveChange(summary);
+              changes = [...changes.filter((item) => item.id !== derived.id), derived].sort(
+                (a, b) => a.id.localeCompare(b.id)
+              );
+              unavailableIds.delete(derived.id);
+              if (selectedChange?.id === derived.id) {
+                selectedChange = derived;
+                if (refresh) {
+                  const owner = taskArtifact(derived);
+                  const valid = derived.artifacts.some(
+                    (item) => item.id === (activeView === "tasks" ? owner : selectedArtifact)
+                  );
+                  if (!valid) {
+                    const first = derived.artifacts.find(
+                      (item) => item.id !== owner && derived.documents?.some((document2) => document2.artifactId === item.id)
                     );
-                    if (!valid) {
-                      const first = derived.artifacts.find(
-                        (item) => item.id !== owner && derived.documents?.some((document2) => document2.artifactId === item.id)
-                      );
-                      selectedArtifact = first?.id ?? derived.artifacts[0]?.id ?? "";
-                      activeView = selectedArtifact === owner || !selectedArtifact ? "tasks" : "document";
-                    }
-                    startContent(derived);
+                    selectedArtifact = first?.id ?? derived.artifacts[0]?.id ?? "";
+                    activeView = selectedArtifact === owner || !selectedArtifact ? "tasks" : "document";
                   }
-                }
-                staleIds.delete(derived.id);
-                failures = failures.filter((item) => item.id !== derived.id);
-                if (pendingInspection?.scope === current && pendingInspection.epoch === epoch && operation >= pendingInspection.minOperation && pendingInspection.name === derived.id) {
-                  pendingInspection = null;
-                  openDetail(derived, current, epoch);
-                }
-              } catch (caught) {
-                if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
-                  return;
-                if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
-                  invalidate();
-                  loadBoard();
-                  return;
-                }
-                failures = [
-                  ...failures.filter((item) => item.id !== entry.id),
-                  {
-                    id: entry.id,
-                    error: caught instanceof Error ? caught.message : "Change could not be read."
-                  }
-                ];
-                if (changes.some((item) => item.id === entry.id)) staleIds.add(entry.id);
-                if (caught instanceof ServiceRequestError && caught.code === "CHANGE_UNAVAILABLE")
-                  unavailableIds.add(entry.id);
-                if (pendingInspection?.scope === current && pendingInspection.name === entry.id)
-                  pendingInspection = null;
-              } finally {
-                if (epoch === startingEpoch && scope === current && operation === boardOperation) {
-                  pendingSummaries--;
-                  render();
+                  startContent(derived);
                 }
               }
+              staleIds.delete(derived.id);
+              failures = failures.filter((item) => item.id !== derived.id);
+              if (pendingInspection?.scope === current && pendingInspection.epoch === epoch && operation >= pendingInspection.minOperation && pendingInspection.name === derived.id) {
+                pendingInspection = null;
+                openDetail(derived, current, epoch);
+              }
+            } catch (caught) {
+              if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
+                return;
+              if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
+                invalidate();
+                loadBoard();
+                return;
+              }
+              failures = [
+                ...failures.filter((item) => item.id !== entry.id),
+                {
+                  id: entry.id,
+                  error: caught instanceof Error ? caught.message : "Change could not be read."
+                }
+              ];
+              if (changes.some((item) => item.id === entry.id)) staleIds.add(entry.id);
+              if (caught instanceof ServiceRequestError && caught.code === "CHANGE_UNAVAILABLE")
+                unavailableIds.add(entry.id);
+              if (pendingInspection?.scope === current && pendingInspection.name === entry.id)
+                pendingInspection = null;
             }
           }
-          await Promise.all(
-            Array.from({ length: Math.min(3, listing.changes.length) }, () => worker())
-          );
+          pendingSummaries = 0;
+          render();
         } catch (caught) {
           if (directory !== currentDirectory || epoch !== startingEpoch || operation !== boardOperation)
             return;
+          if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
+            invalidate();
+            loadBoard();
+            return;
+          }
+          pendingSummaries = 0;
+          staleIds = new Set(changes.map((change) => change.id));
           errorMessage = caught instanceof Error ? caught.message : "The board could not be loaded.";
         } finally {
           if (epoch === startingEpoch && directory === currentDirectory && operation === boardOperation) {
@@ -6984,7 +7132,65 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         });
       }
     }
+    function canArchive() {
+      return !!scope && !loading && !archivePending && changes.some((change) => change.stage === "complete" && !unavailableIds.has(change.id));
+    }
+    async function startArchive() {
+      if (!canArchive()) return;
+      const captured = scope;
+      const originatingEpoch = epoch;
+      const expectedSession = sessionId;
+      const current = () => scope === captured && epoch === originatingEpoch && sessionId === expectedSession;
+      archivePending = true;
+      render();
+      try {
+        const result = await host2.startSession({
+          providerId: "openspec-board",
+          id: "archive-all",
+          title: "Archive completed OpenSpec changes",
+          url: "https://openspec.dev/docs/quickstart",
+          navigation: "preserve",
+          text: archiveAllPrompt
+        });
+        if (!current()) return;
+        if (result.sessionId && result.sent === "sent") {
+          await host2.toast({
+            kind: result.linked !== false ? "success" : "info",
+            message: result.linked !== false ? `Archive prompt submitted in session ${result.sessionId}. Use refresh to see updates.` : `Archive prompt submitted in session ${result.sessionId}, but its workflow reference could not be saved.`
+          });
+        } else {
+          const reason = result.sent === "no-model" ? "No model was available." : `Submission ${result.sent}.`;
+          await host2.toast({
+            kind: "error",
+            persistent: true,
+            message: result.sessionId ? `Session ${result.sessionId} exists, but the archive prompt was not submitted successfully. ${reason} Inspect this session before starting again.${result.linked === false ? " Its workflow reference was not saved." : ""}` : "The archive session could not be created. Inspect sessions before starting again."
+          });
+        }
+      } catch (caught) {
+        if (!current()) return;
+        const knownRefusal = caught instanceof HostRequestError && ["NOT_GRANTED", "DISABLED", "NO_DIRECTORY", "HOST_REJECTED", "HOST_UNAVAILABLE"].includes(
+          caught.code
+        );
+        await host2.toast({
+          kind: "error",
+          persistent: !knownRefusal,
+          message: knownRefusal ? `Archive launch failed: ${caught.message}` : "Archive launch outcome is uncertain. A session or submitted prompt may already exist. Inspect sessions before starting again; this launch will not be retried automatically."
+        });
+      } finally {
+        archivePending = false;
+        if (!disposed) render();
+      }
+    }
+    const archiveView = mountArchiveDialog(appRoot, {
+      current: () => scope,
+      canStart: canArchive,
+      start: () => {
+        void startArchive().catch(() => {
+        });
+      }
+    });
     const boardView = mountBoardView(appRoot, {
+      archive: () => archiveView.open(),
       help: () => void openHelp(),
       create: () => {
         if (scope) createView.open();
@@ -7023,6 +7229,23 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       }
     });
     const detailView = mountDetailView(detailRoot, {
+      copyName: () => {
+        const name = selectedChange?.id;
+        if (!name) return;
+        void (async () => {
+          try {
+            await host2.writeClipboard(name);
+          } catch (caught) {
+            await host2.toast({
+              kind: "error",
+              message: caught instanceof HostRequestError ? caught.message : "Could not copy change name"
+            });
+            return;
+          }
+          await host2.toast({ kind: "success", message: "Change name copied" });
+        })().catch(() => {
+        });
+      },
       openUrl: (url) => {
         void host2.openUrl(url).catch(async (caught) => {
           await host2.toast({
@@ -7069,11 +7292,14 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
     function render() {
       createView.update();
       deleteView.update();
+      archiveView.update();
       const captured = scope;
       const originatingEpoch = epoch;
       boardView.update({
         directory,
         canCreate: !!scope,
+        canArchive: canArchive(),
+        archivePending,
         search,
         listedCount,
         completedTasks,
@@ -7133,6 +7359,7 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       sessionId = nextSession?.id ?? null;
     });
     return () => {
+      disposed = true;
       epoch++;
       selection2++;
       detailOpening++;
@@ -7144,6 +7371,7 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       detailView.dispose();
       deleteView.dispose();
       createView.dispose();
+      archiveView.dispose();
       detailRoot.remove();
     };
   }

@@ -49,6 +49,7 @@ export function mountDetailView(
   root: HTMLElement,
   callbacks: {
     close: () => void;
+    copyName: () => void;
     selectArtifact: (artifact: string) => void;
     selectTasks: () => void;
     retryTasks: () => void;
@@ -98,7 +99,22 @@ export function mountDetailView(
   shell.setAttribute("aria-labelledby", title.id);
   const titleGroup = document.createElement("div");
   titleGroup.className = "detail-title-group";
-  titleGroup.append(title);
+  const nameGroup = document.createElement("div");
+  nameGroup.className = "detail-name-group";
+  const copyRoot = document.createElement("span");
+  copyRoot.className = "detail-copy";
+  const copy = mountButton(copyRoot, {
+    label: "",
+    variant: "ghost",
+    size: "sm",
+    onClick: callbacks.copyName,
+  });
+  const copyButton = copyRoot.querySelector("button")!;
+  copyButton.setAttribute("aria-label", "Copy change name");
+  copyButton.title = "Copy change name";
+  addButtonIcon(copyRoot, "copy");
+  nameGroup.append(title, copyRoot);
+  titleGroup.append(nameGroup);
   const areas = mountAreaBadges(titleGroup);
   titleRow.append(backRoot, titleGroup);
   const headingActions = document.createElement("div");
@@ -402,6 +418,7 @@ export function mountDetailView(
     dispose() {
       reset();
       back.dispose();
+      copy.dispose();
       refresh.dispose();
       retry.dispose();
       deleteAction.dispose();
