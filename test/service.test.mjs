@@ -21,9 +21,439 @@ import { createOpenSpecService, runOpenSpec } from "../service/main.js";
 import { fixtureChange, withProjects } from "./helpers/openspec.mjs";
 
 const exec = promisify(execFile);
+async function mockProject(prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  await mkdir(join(root, "openspec", "changes"), { recursive: true });
+  return root;
+}
+
+test("shared planning scope rejects link retargets without changing the CLI root", async () => {
+  await withProjects(async (main, replacement) => {
+    const checkout = await mkdtemp(join(tmpdir(), "openspec-linked-"));
+    try {
+      await fixtureChange(main, "shared-change", "Shared goal");
+      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      await withService(async (url) => {
+        const post = async (path, body = {}) => {
+          const response = await fetch(`${url}${path}`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: checkout, ...body }),
+          });
+          return { status: response.status, value: await response.json() };
+        };
+        const listing = await post("/changes");
+        assert.equal(listing.status, 200);
+        assert.equal(listing.value.root, checkout);
+        assert.equal(typeof listing.value.planning, "string");
+        const scope = {
+          expectedRoot: listing.value.root,
+          expectedPlanning: listing.value.planning,
+        };
+        assert.equal(
+          (await post("/summaries", scope)).value.changes[0].summary.goal,
+          "Shared goal",
+        );
+        await rm(join(checkout, "openspec"));
+        await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+        for (const path of ["/summaries", "/tasks", "/document", "/create", "/delete"])
+          assert.equal(
+            (
+              await post(path, {
+                ...scope,
+                change: "shared-change",
+                artifactId: "proposal",
+                name: "new-change",
+                goal: "Goal",
+              })
+            ).value.error.code,
+            "PLANNING_CHANGED",
+          );
+        assert.notEqual((await post("/changes")).value.planning, scope.expectedPlanning);
+      });
+    } finally {
+      await rm(checkout, { recursive: true, force: true });
+    }
+  });
+});
+
+test("shared planning task containment rejects escaped custom inputs before instructions runs", async () => {
+  await withProjects(async (main, checkout) => {
+    const change = "shared-tasks";
+    await fixtureChange(main, change, "Bounded tasks");
+    await rm(join(checkout, "openspec"), { recursive: true });
+    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    const target = join(main, "openspec", "changes", change);
+    const schema = join(main, "openspec", "schemas", "custom-input");
+    await mkdir(join(schema, "templates"), { recursive: true });
+    await writeFile(
+      join(schema, "schema.yaml"),
+      `name: custom-input
+version: 1
+artifacts:
+  - id: checklist
+    generates: custom-checklist.md
+    description: Custom tasks
+    template: checklist.md
+    requires: []
+apply:
+  requires: [checklist]
+  tracks: custom-checklist.md
+`,
+    );
+    await writeFile(join(schema, "templates", "checklist.md"), "# Tasks\n");
+    await writeFile(join(target, ".openspec.yaml"), "schema: custom-input\ngoal: Bounded tasks\n");
+    await writeFile(join(main, "outside.md"), "- [ ] Must never be read\n");
+    await writeFile(
+      join(target, "custom-checklist.md"),
+      "- [ ] First line only\n      Not part of the description\n",
+    );
+    const calls = [];
+    await withService(
+      async (url) => {
+        const body = JSON.stringify({ directory: checkout, expectedRoot: checkout, change });
+        const safe = await fetch(`${url}/tasks`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body,
+        });
+        assert.deepEqual((await safe.json()).tasks, [
+          { id: "1", description: "First line only", done: false },
+        ]);
+        calls.length = 0;
+        await rm(join(target, "custom-checklist.md"));
+        await symlink(join(main, "outside.md"), join(target, "custom-checklist.md"));
+        const response = await fetch(`${url}/tasks`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: checkout, expectedRoot: checkout, change }),
+        });
+        assert.equal((await response.json()).error.code, "BAD_DOCUMENT_PATH");
+        assert.equal(calls.includes("instructions"), false);
+      },
+      (cwd, args, remaining) => {
+        calls.push(args[0]);
+        return runOpenSpec(cwd, args, remaining);
+      },
+    );
+  });
+});
+
+test("shared planning reads preserve lexical selectors, goal, multiple specs and CLI task authority", async () => {
+  await withProjects(async (main, checkout) => {
+    await rm(join(checkout, "openspec"), { recursive: true });
+    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    await fixtureChange(main, "shared-documents", "Shared goal");
+    const target = join(main, "openspec", "changes", "shared-documents");
+    for (const [file, text] of [
+      ["proposal.md", "Proposal"],
+      ["design.md", "Design"],
+      ["specs/one/spec.md", "First spec"],
+      ["specs/two/spec.md", "Second spec"],
+      ["tasks.md", "- [x] First task\n- [ ] Second task\n      Not in the CLI description\n"],
+    ]) {
+      await mkdir(join(target, file, ".."), { recursive: true });
+      await writeFile(join(target, file), text);
+    }
+    await withService(async (url) => {
+      const post = async (path, body = {}) =>
+        (
+          await fetch(`${url}${path}`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: checkout, ...body }),
+          })
+        ).json();
+      const listing = await post("/changes");
+      assert.deepEqual(listing.changes, [
+        { id: "shared-documents", completedTasks: 1, totalTasks: 2 },
+      ]);
+      const scope = { expectedRoot: listing.root, expectedPlanning: listing.planning };
+      const summary = (await post("/summaries", scope)).changes[0].summary;
+      assert.equal(summary.goal, "Shared goal");
+      assert.equal(summary.documents.filter((doc) => doc.artifactId === "specs").length, 2);
+      for (const descriptor of summary.documents) {
+        const content = await post("/document", {
+          ...scope,
+          change: "shared-documents",
+          ...descriptor,
+        });
+        assert.equal(typeof content.content, "string");
+        assert.ok(content.content.length);
+      }
+      assert.deepEqual((await post("/tasks", { ...scope, change: "shared-documents" })).tasks, [
+        { id: "1", description: "First task", done: true },
+        { id: "2", description: "Second task", done: false },
+      ]);
+    });
+  });
+});
+
+test("invalid planning links fail without dispatching mutations", async () => {
+  const root = await mockProject("openspec-invalid-link-");
+  try {
+    await rm(join(root, "openspec"), { recursive: true });
+    for (const target of [
+      join(root, "missing"),
+      join(root, "openspec"),
+      join(root, "not-directory"),
+    ]) {
+      await writeFile(join(root, "not-directory"), "Not planning");
+      await symlink(target, join(root, "openspec"));
+      const calls = [];
+      await withService(
+        async (url) => {
+          for (const path of ["/create", "/delete"]) {
+            const response = await fetch(`${url}${path}`, {
+              method: "POST",
+              headers: { authorization: "Bearer test-token" },
+              body: JSON.stringify({
+                directory: root,
+                expectedRoot: root,
+                name: "safe-change",
+                change: "safe-change",
+                goal: "Goal",
+              }),
+            });
+            assert.equal((await response.json()).error.code, "NO_OPENSPEC_ROOT");
+          }
+        },
+        async (_cwd, args) => {
+          calls.push(args[0]);
+          return { ok: true, value: { root: { path: root } } };
+        },
+      );
+      assert.deepEqual(calls, ["context", "context"]);
+      await rm(join(root, "openspec"));
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("summary CLI never reads escaped goal metadata", async () => {
+  await withProjects(async (root) => {
+    await fixtureChange(root, "escaped-goal", "Initial");
+    const target = join(root, "openspec", "changes", "escaped-goal", ".openspec.yaml");
+    await writeFile(join(root, "outside.yaml"), "goal: Must not be read\n");
+    await rm(target);
+    await symlink(join(root, "outside.yaml"), target);
+    let statusCalls = 0;
+    await withService(
+      async (url) => {
+        const response = await fetch(`${url}/summaries`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: root, expectedRoot: root }),
+        });
+        assert.equal((await response.json()).error.code, "BAD_METADATA_PATH");
+        assert.equal(statusCalls, 0);
+      },
+      (cwd, args, remaining) => {
+        if (args[0] === "status") statusCalls++;
+        return runOpenSpec(cwd, args, remaining);
+      },
+    );
+  });
+});
+
+test("shared planning creation pins dispatch and reports retargeted outcomes as unknown", async () => {
+  await withProjects(async (main, replacement) => {
+    const checkout = await mkdtemp(join(tmpdir(), "openspec-create-link-"));
+    try {
+      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      let writes = 0;
+      await withService(
+        async (url) => {
+          const listing = await (
+            await fetch(`${url}/changes`, {
+              method: "POST",
+              headers: { authorization: "Bearer test-token" },
+              body: JSON.stringify({ directory: checkout }),
+            })
+          ).json();
+          const response = await fetch(`${url}/create`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({
+              directory: checkout,
+              expectedRoot: listing.root,
+              expectedPlanning: listing.planning,
+              name: "pinned-change",
+              goal: "Pinned goal",
+            }),
+          });
+          const value = await response.json();
+          assert.equal(value.error.outcome, "unknown");
+          assert.equal(writes, 1);
+          assert.match(
+            await readFile(
+              join(main, "openspec", "changes", "pinned-change", ".openspec.yaml"),
+              "utf8",
+            ),
+            /Pinned goal/,
+          );
+          assert.deepEqual(await readdir(join(replacement, "openspec", "changes")), ["archive"]);
+        },
+        async (cwd, args, remaining) => {
+          if (args[0] === "new") {
+            writes++;
+            assert.equal(cwd, main, "write must not traverse the mutable checkout link");
+            await rm(join(checkout, "openspec"));
+            await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+          }
+          return runOpenSpec(cwd, args, remaining);
+        },
+      );
+    } finally {
+      await rm(checkout, { recursive: true, force: true });
+    }
+  });
+});
+
+test("shared creation rejects a planning link retarget before dispatch", async () => {
+  await withProjects(async (main, replacement) => {
+    const checkout = await mkdtemp(join(tmpdir(), "openspec-prewrite-link-"));
+    try {
+      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      let checks = 0;
+      let writes = 0;
+      await withService(
+        async (url) => {
+          const response = await fetch(`${url}/create`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({
+              directory: checkout,
+              expectedRoot: checkout,
+              name: "no-dispatch",
+              goal: "Never create",
+            }),
+          });
+          assert.equal((await response.json()).error.code, "PLANNING_CHANGED");
+          assert.equal(writes, 0);
+          for (const directory of [main, replacement])
+            assert.deepEqual(await readdir(join(directory, "openspec", "changes")), ["archive"]);
+        },
+        async (cwd, args, remaining) => {
+          if (args[0] === "new") writes++;
+          if (args[0] === "context" && ++checks === 3) {
+            await rm(join(checkout, "openspec"));
+            await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+          }
+          return runOpenSpec(cwd, args, remaining);
+        },
+      );
+    } finally {
+      await rm(checkout, { recursive: true, force: true });
+    }
+  });
+});
+
+test("shared planning deletion preserves the link and rejects same-path directory replacement", async () => {
+  await withProjects(async (main, checkout) => {
+    await rm(join(checkout, "openspec"), { recursive: true });
+    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    await fixtureChange(main, "shared-delete", "Delete only this");
+    const parent = join(main, "openspec", "changes");
+    const target = join(parent, "shared-delete");
+    await writeFile(join(main, "external.txt"), "Keep me");
+    await symlink(join(main, "external.txt"), join(target, "external-link"));
+    let contexts = 0;
+    let dispatched = 0;
+    let replace = true;
+    await withService(
+      async (url) => {
+        const body = { directory: checkout, expectedRoot: checkout, change: "shared-delete" };
+        const post = async () => {
+          const response = await fetch(`${url}/delete`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify(body),
+          });
+          return { status: response.status, value: await response.json() };
+        };
+        const failed = await post();
+        assert.equal(failed.value.error.code, "ROOT_CHANGED");
+        assert.equal(dispatched, 0);
+        assert.ok((await readdir(parent)).includes("saved-original"));
+        replace = false;
+        assert.equal((await post()).status, 200);
+        assert.equal(dispatched, 1);
+        assert.equal(await readFile(join(main, "external.txt"), "utf8"), "Keep me");
+        assert.ok((await readdir(checkout)).includes("openspec"));
+        assert.ok((await readdir(parent)).includes("saved-original"));
+      },
+      async (cwd, args, remaining) => {
+        if (args[0] === "context" && ++contexts === 2 && replace) {
+          await rename(target, join(parent, "saved-original"));
+          await mkdir(target);
+        }
+        return runOpenSpec(cwd, args, remaining);
+      },
+      {
+        remove: async (...args) => {
+          dispatched++;
+          return rm(...args);
+        },
+      },
+    );
+  });
+});
+
+test("shared deletion rejects replaced planning and active parent directories before removal", async () => {
+  for (const component of ["planning", "parent"])
+    await withProjects(async (main, checkout) => {
+      await fixtureChange(main, "replace-parent", "Keep original and replacement");
+      await rm(join(checkout, "openspec"), { recursive: true });
+      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      const planning = join(main, "openspec");
+      const replaced = component === "planning" ? planning : join(planning, "changes");
+      const saved = join(main, `saved-${component}`);
+      let checks = 0;
+      let removed = 0;
+      await withService(
+        async (url) => {
+          const response = await fetch(`${url}/delete`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({
+              directory: checkout,
+              expectedRoot: checkout,
+              change: "replace-parent",
+            }),
+          });
+          assert.equal(
+            (await response.json()).error.code,
+            component === "planning" ? "PLANNING_CHANGED" : "ROOT_CHANGED",
+          );
+          assert.equal(removed, 0);
+          assert.ok(
+            (await readdir(component === "planning" ? join(saved, "changes") : saved)).includes(
+              "replace-parent",
+            ),
+          );
+          assert.ok((await readdir(join(planning, "changes"))).includes("replace-parent"));
+        },
+        async (cwd, args, remaining) => {
+          if (args[0] === "context" && ++checks === 2) {
+            await rename(replaced, saved);
+            await mkdir(join(planning, "changes", "replace-parent"), { recursive: true });
+          }
+          return runOpenSpec(cwd, args, remaining);
+        },
+        {
+          remove: async (...args) => {
+            removed++;
+            return rm(...args);
+          },
+        },
+      );
+    });
+});
 
 test("rootless failed change reads verify a fresh listing before reporting availability", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-rootless-"));
+  const root = await mockProject("openspec-rootless-");
   const other = await mkdtemp(join(tmpdir(), "openspec-rootless-other-"));
   try {
     for (const path of ["/tasks", "/document"]) {
@@ -115,19 +545,24 @@ async function summaryResponse(url, options) {
 }
 
 test("summaries batch isolates CLI diagnostics, paths and metadata with one invocation", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-batch-"));
+  const root = await mockProject("openspec-batch-");
   const other = await mkdtemp(join(tmpdir(), "openspec-escape-"));
   const calls = [];
   const status = (id, extra = {}) => ({
     changeName: id,
-    changeRoot: join(root, id),
+    changeRoot: join(root, "openspec", "changes", id),
     artifacts: [],
     applyRequires: [],
     artifactPaths: {},
     ...extra,
   });
-  for (const id of ["good", "bad-path", "bad-areas"]) await mkdir(join(root, id));
-  await writeFile(join(root, "bad-areas", ".openspec.yaml"), "affected_areas: not-an-array\n");
+  for (const id of ["good", "bad-path", "bad-areas"])
+    await mkdir(join(root, "openspec", "changes", id));
+  await writeFile(
+    join(root, "openspec", "changes", "bad-areas", ".openspec.yaml"),
+    "affected_areas: not-an-array\n",
+  );
+  await writeFile(join(other, "proposal.md"), "Outside");
   let value = {
     root: { path: root },
     changes: [
@@ -208,10 +643,12 @@ test("summaries accepts real CLI exit one while keeping a good change", async ()
 });
 
 test("slimmer read routes use only their working command and reconcile missing tasks", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-slim-"));
+  const root = await mockProject("openspec-slim-");
+  const changeRoot = join(root, "openspec", "changes", "slim");
+  await mkdir(changeRoot);
   const calls = [];
   let missing = false;
-  await writeFile(join(root, "proposal.md"), "Proposal");
+  await writeFile(join(changeRoot, "proposal.md"), "Proposal");
   try {
     await withService(
       async (url) => {
@@ -249,12 +686,12 @@ test("slimmer read routes use only their working command and reconcile missing t
             root: { path: root },
             changes: [],
             tasks: [],
-            changeRoot: root,
+            changeRoot,
             artifacts: [
               { id: "proposal", status: "done", requires: [], outputPath: "proposal.md" },
             ],
             applyRequires: [],
-            artifactPaths: { proposal: { existingOutputPaths: [join(root, "proposal.md")] } },
+            artifactPaths: { proposal: { existingOutputPaths: [join(changeRoot, "proposal.md")] } },
           },
         };
       },
@@ -265,7 +702,7 @@ test("slimmer read routes use only their working command and reconcile missing t
 });
 
 test("read root verification rejects missing, null, implicit and changed roots", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-read-root-"));
+  const root = await mockProject("openspec-read-root-");
   const other = await mkdtemp(join(tmpdir(), "openspec-other-root-"));
   try {
     for (const [reported, code, status] of [
@@ -329,7 +766,7 @@ async function withService(run, runner, options) {
 }
 
 test("one request deadline stops a sequence of individually short commands", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-budget-"));
+  const root = await mockProject("openspec-budget-");
   const calls = [];
   try {
     await withService(
@@ -457,8 +894,10 @@ test("body receipt consumes the same budget as later CLI commands", async () => 
 });
 
 test("encoded JSON exceeding the response limit fails without truncation and keeps health live", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-escape-"));
-  const file = join(root, "proposal.md");
+  const root = await mockProject("openspec-escape-");
+  const changeRoot = join(root, "openspec", "changes", "escape-change");
+  await mkdir(changeRoot);
+  const file = join(changeRoot, "proposal.md");
   await writeFile(file, "\u0001".repeat(60_000));
   try {
     await withService(
@@ -487,7 +926,7 @@ test("encoded JSON exceeding the response limit fails without truncation and kee
             ? { root: { path: root } }
             : {
                 root: { path: root },
-                changeRoot: root,
+                changeRoot,
                 artifacts: [
                   { id: "proposal", status: "done", requires: [], outputPath: "proposal.md" },
                 ],
@@ -502,7 +941,7 @@ test("encoded JSON exceeding the response limit fails without truncation and kee
 });
 
 test("goal metadata is byte-bounded before YAML parsing while absent and boundary files work", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-goal-bound-"));
+  const root = await mockProject("openspec-goal-bound-");
   const changeRoot = join(root, "openspec", "changes", "goal-change");
   const metadataPath = join(changeRoot, ".openspec.yaml");
   await mkdir(changeRoot, { recursive: true });
@@ -526,14 +965,14 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
   try {
     await withService(
       async (url) => {
-        const summary = async () => {
+        const summary = async (preflight = false) => {
           const before = calls.length;
           const response = await summaryResponse(`${url}/summaries`, {
             method: "POST",
             headers: { authorization: "Bearer test-token" },
             body: JSON.stringify({ directory: root, expectedRoot: root, change: "goal-change" }),
           });
-          assert.deepEqual(calls.slice(before), ["status"]);
+          assert.deepEqual(calls.slice(before), preflight ? [] : ["status"]);
           return { status: response.status, value: await response.json() };
         };
         assert.deepEqual((await summary()).value.affectedAreas, []);
@@ -580,7 +1019,7 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
         const outside = join(root, "outside.yaml");
         await writeFile(outside, "affected_areas: [unsafe]\n");
         await symlink(outside, metadataPath);
-        assert.equal((await summary()).value.error.code, "BAD_DOCUMENT_PATH");
+        assert.equal((await summary(true)).value.error.code, "BAD_METADATA_PATH");
         assert.equal(
           (await fetch(`${url}/health`, { headers: { authorization: "Bearer test-token" } }))
             .status,
@@ -837,7 +1276,7 @@ test("board metadata stays lightweight and Tasks returns only CLI records", asyn
 });
 
 test("a failed status confirms missing changes before reporting them unavailable", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-missing-"));
+  const root = await mockProject("openspec-missing-");
   const calls = [];
   const runner = async (_directory, args) => {
     calls.push(args[0]);
@@ -872,7 +1311,7 @@ test("a failed status confirms missing changes before reporting them unavailable
 });
 
 test("a failed status stays retryable for a listed change and propagates root replacement", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-status-root-"));
+  const root = await mockProject("openspec-status-root-");
   const other = await mkdtemp(join(tmpdir(), "openspec-other-root-"));
   let listedRoot = root;
   const runner = async (_directory, args) => {
@@ -1306,8 +1745,8 @@ test("creation stays in the validated root after a selected-directory alias move
         assert.equal(rejected.status, 409);
         assert.equal(writes, 0);
         const response = await post(first);
-        assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { root: first, change: "bound-change" });
+        assert.equal(response.status, 409);
+        assert.equal((await response.json()).error.outcome, "unknown");
         assert.equal(writes, 1);
         assert.equal(
           (
@@ -1373,8 +1812,8 @@ test("creation stays in the validated registered store when its pointer changes"
             goal: "Stay in the first store",
           }),
         });
-        assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { root: first, change: "bound-change" });
+        assert.equal(response.status, 409);
+        assert.equal((await response.json()).error.outcome, "unknown");
         assert.equal(writes, 1);
         assert.equal(
           (await readdir(join(first, "openspec", "changes"))).includes("bound-change"),
@@ -1400,7 +1839,7 @@ test("creation stays in the validated registered store when its pointer changes"
 });
 
 test("creation distinguishes local rejection from outcomes after dispatch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-outcome-"));
+  const root = await mockProject("openspec-outcome-");
   try {
     for (const outcome of ["transport", "malformed", "unexpected"]) {
       const calls = [];
@@ -1423,7 +1862,7 @@ test("creation distinguishes local rejection from outcomes after dispatch", asyn
           const response = await post("valid-name");
           assert.notEqual(response.status, 200, outcome);
           assert.equal((await response.json()).error.outcome, "unknown", outcome);
-          assert.deepEqual(calls, ["context", "new"], outcome);
+          assert.deepEqual(calls, ["context", "context", "context", "new"], outcome);
         },
         async (_directory, args) => {
           calls.push(args[0]);
@@ -1444,7 +1883,7 @@ test("creation distinguishes local rejection from outcomes after dispatch", asyn
 });
 
 test("creation timeout after dispatch has an unknown outcome and never retries", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-slow-write-"));
+  const root = await mockProject("openspec-slow-write-");
   let writes = 0;
   try {
     await withService(
@@ -1477,7 +1916,9 @@ test("creation timeout after dispatch has an unknown outcome and never retries",
 });
 
 test("a disappeared document returns a structured error and leaves health available", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-race-"));
+  const root = await mockProject("openspec-race-");
+  const changeRoot = join(root, "openspec", "changes", "race-change");
+  await mkdir(changeRoot);
   const runner = async (_directory, args) => {
     if (args[0] === "context") return { ok: true, value: { root: { path: root } } };
     if (args[0] === "status")
@@ -1485,7 +1926,7 @@ test("a disappeared document returns a structured error and leaves health availa
         ok: true,
         value: {
           root: { path: root },
-          changeRoot: root,
+          changeRoot,
           artifacts: [{ id: "proposal", status: "done", requires: [], outputPath: "proposal.md" }],
           applyRequires: ["proposal"],
           artifactPaths: { proposal: { existingOutputPaths: [join(root, "gone.md")] } },
@@ -1547,10 +1988,12 @@ test("malformed listing entries and count bounds fail explicitly", async () => {
 });
 
 test("invalid status dependencies fail a change read, while skipped custom artifacts retain closure", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-status-"));
+  const root = await mockProject("openspec-status-");
+  const changeRoot = join(root, "openspec", "changes", "custom-change");
+  await mkdir(changeRoot);
   const base = {
     root: { path: root },
-    changeRoot: root,
+    changeRoot,
     applyRequires: ["custom"],
     artifacts: [
       { id: "proposal", status: "skipped", outputPath: "proposal.md", requires: [] },
@@ -1614,7 +2057,7 @@ test("invalid status dependencies fail a change read, while skipped custom artif
 });
 
 test("malformed detail tasks fail instead of fabricating partial detail", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-detail-"));
+  const root = await mockProject("openspec-detail-");
   try {
     await withService(
       async (url) => {

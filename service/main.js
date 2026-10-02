@@ -7533,7 +7533,26 @@ async function runOpenSpec(directory, args, remainingMs = COMMAND_TIMEOUT_MS, op
 var failure = (error) => ({ ok: false, error });
 var inside = (path, parent) => path === parent || path.startsWith(`${parent}${import_node_path.sep}`);
 function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
-  async function context(directory, expectedRoot) {
+  async function planningScope(root, expectedPlanning) {
+    try {
+      const planningRoot = await (0, import_promises.realpath)((0, import_node_path.join)(root, "openspec"));
+      const stat = await (0, import_promises.lstat)(planningRoot);
+      if (!stat.isDirectory()) throw new Error("Planning is not a directory.");
+      const planning = JSON.stringify([planningRoot, stat.dev, stat.ino]);
+      if (planning.length > 4096) throw new Error("Planning identity exceeds bounds.");
+      if (expectedPlanning !== void 0 && planning !== expectedPlanning)
+        throw serviceError(
+          "PLANNING_CHANGED",
+          "Planning target changed. Refresh to establish the new scope.",
+          409
+        );
+      return { root, planning, planningRoot };
+    } catch (caught) {
+      if (caught instanceof ServiceFault) throw caught;
+      throw serviceError("NO_OPENSPEC_ROOT", "The planning target is missing or invalid.", 404);
+    }
+  }
+  async function context(directory, expectedRoot, expectedPlanning) {
     if (!(0, import_node_path.isAbsolute)(directory)) return serviceError("BAD_DIRECTORY", "Directory must be absolute.");
     const result = await run(directory, ["context"]);
     if (!result.ok) return result.error;
@@ -7547,7 +7566,7 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
     const canonical = await (0, import_promises.realpath)(root);
     if (expectedRoot !== void 0 && canonical !== expectedRoot)
       return serviceError("ROOT_CHANGED", "The selected OpenSpec root has changed.", 409);
-    return { root: canonical };
+    return planningScope(canonical, expectedPlanning);
   }
   async function checked(directory, args, current, strict = false, reconcileRootless = false) {
     if (!(0, import_node_path.isAbsolute)(directory))
@@ -7589,14 +7608,69 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
     }
     if (typeof result.value.changeRoot !== "string")
       return serviceError("BAD_CLI_OUTPUT", "OpenSpec did not return a change root.", 502);
-    const changeRoot = await (0, import_promises.realpath)(result.value.changeRoot);
-    if (!inside(changeRoot, current.root))
-      return serviceError(
-        "BAD_CHANGE_ROOT",
-        "OpenSpec returned a change outside the selected project.",
-        502
-      );
-    return { root: current.root, changeRoot, status: result.value };
+    const changeRoot = await validatedChange(current, change, result.value);
+    return { ...current, changeRoot, status: result.value };
+  }
+  async function validatedChange(current, change, status) {
+    const parent = (0, import_node_path.join)(current.planningRoot, "changes");
+    const target = (0, import_node_path.join)(parent, change);
+    for (const path of [parent, target]) {
+      try {
+        if ((await (0, import_promises.lstat)(path)).isSymbolicLink())
+          throw serviceError("BAD_CHANGE_ROOT", "Change path is not a real named directory.", 409);
+      } catch (caught) {
+        if (caught.code !== "ENOENT") throw caught;
+      }
+    }
+    if (status && (typeof status.changeRoot !== "string" || await (0, import_promises.realpath)(status.changeRoot) !== target))
+      throw serviceError("BAD_CHANGE_ROOT", "OpenSpec returned an unsafe change path.", 502);
+    for (const path of [parent, target]) {
+      const stat = await (0, import_promises.lstat)(path);
+      if (stat.isSymbolicLink() || !stat.isDirectory() || await (0, import_promises.realpath)(path) !== path)
+        throw serviceError("BAD_CHANGE_ROOT", "Change path is not a real named directory.", 409);
+    }
+    if (status) {
+      const home = status.planningHome;
+      if (typeof status.changeRoot !== "string" || await (0, import_promises.realpath)(status.changeRoot) !== target || home?.changesDir !== void 0 && (typeof home.changesDir !== "string" || await (0, import_promises.realpath)(home.changesDir) !== parent))
+        throw serviceError("BAD_CHANGE_ROOT", "OpenSpec returned an unsafe change path.", 502);
+    }
+    return target;
+  }
+  async function validateInputs(current, change) {
+    let target;
+    try {
+      target = await validatedChange(current, change);
+    } catch (caught) {
+      if (caught.code === "ENOENT") return;
+      throw caught;
+    }
+    const pending = [target];
+    const visited = /* @__PURE__ */ new Set();
+    let entries = 0;
+    while (pending.length) {
+      const directory = pending.pop();
+      if (visited.has(directory)) continue;
+      visited.add(directory);
+      for (const entry of await (0, import_promises.readdir)(directory, { withFileTypes: true })) {
+        if (++entries > 1e4)
+          throw serviceError(
+            "INPUTS_TOO_LARGE",
+            "Change input tree exceeds validation bounds.",
+            413
+          );
+        const path = (0, import_node_path.join)(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          const canonical = await (0, import_promises.realpath)(path);
+          if (!inside(canonical, target))
+            throw serviceError(
+              "BAD_DOCUMENT_PATH",
+              "Task input link is outside the selected change.",
+              502
+            );
+          if ((await (0, import_promises.lstat)(canonical)).isDirectory()) pending.push(canonical);
+        } else if (entry.isDirectory()) pending.push(path);
+      }
+    }
   }
   async function reconcileChange(directory, change, current, error) {
     if (error.code === "OPENSPEC_ERROR") {
@@ -7607,6 +7681,20 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
         return serviceError("CHANGE_UNAVAILABLE", "Change is no longer listed.", 404);
     }
     return error;
+  }
+  async function validateMetadata(current, change) {
+    const target = (0, import_node_path.join)(current.planningRoot, "changes", change);
+    try {
+      await validatedChange(current, change);
+      if (!inside(await (0, import_promises.realpath)((0, import_node_path.join)(target, ".openspec.yaml")), target))
+        throw serviceError(
+          "BAD_METADATA_PATH",
+          "Goal metadata is outside the selected change.",
+          502
+        );
+    } catch (caught) {
+      if (caught.code !== "ENOENT") throw caught;
+    }
   }
   async function list(directory, current, strict = true) {
     const result = await checked(directory, ["list"], current, strict);
@@ -7673,7 +7761,7 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
           ...await metadataFor(state),
           artifacts,
           applyRequires: state.status.applyRequires,
-          documents: documentsFor(state, artifacts)
+          documents: await documentsFor(state, artifacts)
         }
       };
     } catch (caught) {
@@ -7681,11 +7769,24 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       return failure(serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec change data.", 502));
     }
   }
-  async function changes(directory, expectedRoot) {
+  async function changes(directory, expectedRoot, expectedPlanning) {
+    if (expectedRoot) await planningScope(expectedRoot, expectedPlanning);
     const listing = await list(directory, expectedRoot ? { root: expectedRoot } : void 0);
-    return "code" in listing ? failure(listing) : { ok: true, value: { directory, ...listing } };
+    if ("code" in listing) return failure(listing);
+    const current = await planningScope(listing.root, expectedPlanning);
+    return { ok: true, value: { directory, ...listing, planning: current.planning } };
   }
-  async function summaries(directory, expectedRoot) {
+  async function summaries(directory, expectedRoot, expectedPlanning) {
+    const current = await planningScope(expectedRoot, expectedPlanning);
+    const parent = (0, import_node_path.join)(current.planningRoot, "changes");
+    if ((await (0, import_promises.lstat)(parent)).isSymbolicLink())
+      throw serviceError("BAD_CHANGE_ROOT", "Changes parent is not a real directory.", 409);
+    const entries = await (0, import_promises.readdir)(parent, { withFileTypes: true });
+    if (entries.length > 1e4)
+      throw serviceError("INPUTS_TOO_LARGE", "Planning tree exceeds validation bounds.", 413);
+    for (const entry of entries)
+      if (entry.name !== "archive" && isChangeName(entry.name) && (entry.isDirectory() || entry.isSymbolicLink()))
+        await validateMetadata(current, entry.name);
     const result = await checked(directory, ["status", "--all"], { root: expectedRoot }, true);
     if (!result.value) return result;
     if (!result.ok && result.error.code !== "OPENSPEC_ERROR") return result;
@@ -7714,14 +7815,8 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
           );
         }
         if (typeof status.changeRoot !== "string") throw new Error("Missing change root.");
-        const changeRoot = await (0, import_promises.realpath)(status.changeRoot);
-        if (!inside(changeRoot, expectedRoot))
-          throw serviceError(
-            "BAD_CHANGE_ROOT",
-            "OpenSpec returned a change outside the selected project.",
-            502
-          );
-        const summary = await summaryFor({ root: expectedRoot, changeRoot, status }, id);
+        const changeRoot = await validatedChange(current, id, status);
+        const summary = await summaryFor({ ...current, changeRoot, status }, id);
         if (!summary.ok) throw summary.error;
         changes2.push({ id, summary: summary.value });
       } catch (caught) {
@@ -7729,9 +7824,10 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
         changes2.push({ id, error: { code: error.code, message: error.message } });
       }
     }
-    return { ok: true, value: { root: expectedRoot, changes: changes2 } };
+    await planningScope(expectedRoot, current.planning);
+    return { ok: true, value: { root: expectedRoot, planning: current.planning, changes: changes2 } };
   }
-  function documentsFor(state, artifacts) {
+  async function documentsFor(state, artifacts) {
     const paths = state.status.artifactPaths;
     if (!paths || typeof paths !== "object" || Array.isArray(paths))
       throw new Error("Invalid document paths.");
@@ -7745,7 +7841,7 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       if (!Array.isArray(outputs)) throw new Error("Invalid artefact outputs.");
       for (const path of outputs) {
         if (typeof path !== "string" || !(0, import_node_path.isAbsolute)(path)) throw new Error("Invalid output path.");
-        const selector = (0, import_node_path.relative)(state.changeRoot, path);
+        const selector = (0, import_node_path.relative)(state.changeRoot, await (0, import_promises.realpath)(path));
         if (!selector || selector === ".." || selector.startsWith(`..${import_node_path.sep}`) || (0, import_node_path.isAbsolute)(selector))
           throw serviceError(
             "BAD_DOCUMENT_PATH",
@@ -7790,10 +7886,11 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       await file.close();
     }
   }
-  async function tasks(directory, change, expectedRoot) {
+  async function tasks(directory, change, expectedRoot, expectedPlanning) {
     if (!isChangeName(change))
       return failure(serviceError("BAD_CHANGE", "Change name is invalid."));
-    const current = { root: expectedRoot };
+    const current = await planningScope(expectedRoot, expectedPlanning);
+    await validateInputs(current, change);
     const apply = await checked(
       directory,
       ["instructions", "apply", "--change", change],
@@ -7802,6 +7899,7 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       true
     );
     if (!apply.ok) return failure(await reconcileChange(directory, change, current, apply.error));
+    await planningScope(expectedRoot, current.planning);
     try {
       return { ok: true, value: { tasks: decodeTasks(apply.value.tasks) } };
     } catch (caught) {
@@ -7809,13 +7907,14 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       return failure(serviceError("BAD_CLI_OUTPUT", "Invalid OpenSpec change details.", 502));
     }
   }
-  async function documentFor(directory, change, artifactId, selector, expectedRoot = directory) {
-    const current = { root: expectedRoot };
+  async function documentFor(directory, change, artifactId, selector, expectedRoot = directory, expectedPlanning) {
+    const current = await planningScope(expectedRoot, expectedPlanning);
+    await validateMetadata(current, change);
     const state = await changeState(directory, change, current);
     if ("code" in state) return failure(state);
     let documents;
     try {
-      documents = documentsFor(
+      documents = await documentsFor(
         state,
         decodeArtifacts(state.status.artifacts, state.status.applyRequires)
       );
@@ -7828,21 +7927,36 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       return failure(
         serviceError("DOCUMENT_UNAVAILABLE", "This document is no longer available.", 404)
       );
-    return readDocument(state, selected);
+    await planningScope(expectedRoot, current.planning);
+    const result = await readDocument(state, selected);
+    await planningScope(expectedRoot, current.planning);
+    return result;
   }
-  async function createChange(directory, name, goal, expectedRoot) {
+  async function createChange(directory, name, goal, expectedRoot, expectedPlanning) {
     if (!isChangeName(name))
       return failure(
         serviceError("BAD_CHANGE", "Use lowercase letters or digits separated by single hyphens.")
       );
     if (!goal.trim()) return failure(serviceError("BAD_GOAL", "Goal is required."));
-    const current = await context(directory, expectedRoot);
+    const current = await context(directory, expectedRoot, expectedPlanning);
     if ("code" in current) return failure(current);
+    const pinned = await context((0, import_node_path.dirname)(current.planningRoot));
+    if ("code" in pinned) return failure(pinned);
+    if (pinned.planning !== current.planning)
+      return failure(serviceError("ROOT_CHANGED", "Canonical planning context changed.", 409));
+    const confirmed = await context(directory, current.root, current.planning);
+    if ("code" in confirmed) return failure(confirmed);
+    const parent = (0, import_node_path.join)(current.planningRoot, "changes");
+    const parentStat = await (0, import_promises.lstat)(parent);
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory())
+      return failure(
+        serviceError("BAD_CHANGE_ROOT", "Changes parent is not a real directory.", 409)
+      );
     try {
       const result = await checked(
-        current.root,
+        pinned.root,
         ["new", "change", name, "--goal", goal.trim()],
-        current
+        pinned
       );
       if (!result.ok)
         return failure(
@@ -7858,6 +7972,9 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
             "unknown"
           )
         );
+      const final = await context(directory, current.root, current.planning);
+      if ("code" in final)
+        return failure(serviceError(final.code, final.message, final.status, "unknown"));
       return { ok: true, value: { root: current.root, change: name } };
     } catch {
       return failure(
@@ -7871,10 +7988,10 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
     }
   }
   async function deleteChange(directory, change, expectedRoot, beforeRemove = () => {
-  }) {
+  }, expectedPlanning) {
     if (!isChangeName(change))
       return failure(serviceError("BAD_CHANGE", "Change name is invalid."));
-    const current = await context(directory, expectedRoot);
+    const current = await context(directory, expectedRoot, expectedPlanning);
     if ("code" in current) return failure(current);
     const listing = await list(directory, current, false);
     if ("code" in listing) return failure(listing);
@@ -7882,21 +7999,31 @@ function createOpenSpecAdapter(run = runOpenSpec, remove = import_promises.rm) {
       return failure(serviceError("CHANGE_UNAVAILABLE", "Change is no longer listed.", 404));
     const status = await checked(directory, ["status", "--change", change], current);
     if (!status.ok) return status;
-    const parent = (0, import_node_path.join)(current.root, "openspec", "changes");
+    const parent = (0, import_node_path.join)(current.planningRoot, "changes");
     const target = (0, import_node_path.join)(parent, change);
-    const home = status.value.planningHome;
-    if (home?.changesDir !== parent || status.value.changeRoot !== target)
-      return failure(
-        serviceError("BAD_CHANGE_ROOT", "OpenSpec returned an unsafe change path.", 502)
-      );
     try {
-      const confirmed = await context(directory, expectedRoot);
+      await validatedChange(current, change, status.value);
+      const identities = await Promise.all(
+        [current.planningRoot, parent, target].map(async (path) => {
+          const stat = await (0, import_promises.lstat)(path);
+          return { path, dev: stat.dev, ino: stat.ino };
+        })
+      );
+      const confirmed = await context(directory, expectedRoot, current.planning);
       if ("code" in confirmed) return failure(confirmed);
-      for (const path of [(0, import_node_path.join)(current.root, "openspec"), parent, target]) {
+      for (const { path, dev, ino } of identities) {
         const stat = await (0, import_promises.lstat)(path);
         if (stat.isSymbolicLink() || !stat.isDirectory())
           return failure(
             serviceError("BAD_CHANGE_ROOT", "Change path is not a real directory.", 409)
+          );
+        if (stat.dev !== dev || stat.ino !== ino || await (0, import_promises.realpath)(path) !== path)
+          return failure(
+            serviceError(
+              "ROOT_CHANGED",
+              "Planning, parent or target changed during deletion.",
+              409
+            )
           );
       }
       if (await (0, import_promises.realpath)(current.root) !== current.root || await (0, import_promises.realpath)(parent) !== parent || await (0, import_promises.realpath)(target) !== target || !(await (0, import_promises.lstat)(target)).isDirectory())
@@ -7990,22 +8117,28 @@ function createOpenSpecService(token2, runner = runOpenSpec, options = {}) {
       ]).finally(() => clearTimeout(bodyTimer));
       const directory = requiredString(body, "directory");
       const expectedRoot = body.expectedRoot === void 0 ? void 0 : requiredString(body, "expectedRoot");
+      const expectedPlanning = body.expectedPlanning === void 0 ? void 0 : requiredString(body, "expectedPlanning");
+      if (expectedPlanning && (expectedPlanning.length > 4096 || expectedPlanning.includes("\0")))
+        throw serviceError("BAD_REQUEST", "Invalid planning identity.");
       const path = new URL(request.url, "http://localhost").pathname;
-      const work = path === "/changes" ? adapter.changes(directory, expectedRoot) : path === "/summaries" ? adapter.summaries(directory, requiredString(body, "expectedRoot")) : path === "/tasks" ? adapter.tasks(
+      const work = path === "/changes" ? adapter.changes(directory, expectedRoot, expectedPlanning) : path === "/summaries" ? adapter.summaries(directory, requiredString(body, "expectedRoot"), expectedPlanning) : path === "/tasks" ? adapter.tasks(
         directory,
         requiredString(body, "change"),
-        requiredString(body, "expectedRoot")
+        requiredString(body, "expectedRoot"),
+        expectedPlanning
       ) : path === "/document" ? adapter.documentFor(
         directory,
         requiredString(body, "change"),
         requiredString(body, "artifactId"),
         body.selector === void 0 ? void 0 : requiredString(body, "selector"),
-        requiredString(body, "expectedRoot")
+        requiredString(body, "expectedRoot"),
+        expectedPlanning
       ) : path === "/create" ? adapter.createChange(
         directory,
         requiredString(body, "name"),
         requiredString(body, "goal"),
-        requiredString(body, "expectedRoot")
+        requiredString(body, "expectedRoot"),
+        expectedPlanning
       ) : path === "/delete" ? adapter.deleteChange(
         directory,
         requiredString(body, "change"),
@@ -8014,7 +8147,8 @@ function createOpenSpecService(token2, runner = runOpenSpec, options = {}) {
           if (Date.now() >= deadline)
             throw serviceError("CLI_TIMEOUT", "OpenSpec request timed out.", 504);
           mutationDispatched = true;
-        }
+        },
+        expectedPlanning
       ) : Promise.resolve({
         ok: false,
         error: serviceError("NOT_FOUND", "Route not found.", 404)

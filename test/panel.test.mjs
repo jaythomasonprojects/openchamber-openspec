@@ -49,6 +49,12 @@ function hostHtml() {
   return `<!doctype html><script>
     const { directory, root, artifacts, theme } = ${data};
     let currentRoot = root;
+    let currentPlanning = "fixture-planning";
+    let projects = [{ id: "origin-project", name: "Origin", directory }];
+    let worktrees = [];
+    let sessions = [];
+    window.__projects = value => { projects = value; };
+    window.__worktrees = value => { worktrees = value; };
     const guests = new Set();
     const changes = [
       { id: "first-change", goal: "Read the proposal", completedTasks: 1, totalTasks: 2 },
@@ -174,6 +180,7 @@ function hostHtml() {
     window.__directory = (next) => { ready.directory = next; for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
       type: "directory", payload: { directory: next } }, "*"); };
     window.__root = (next) => { currentRoot = next; };
+    window.__planning = next => { currentPlanning = next; };
     const ready = { directory, theme, locale: "en-AU", session: { id: "fixture-session" },
       surface: "panel", connection: { connected: true, account: "" }, settings: {}, item: null };
     addEventListener("message", (event) => {
@@ -193,7 +200,10 @@ function hostHtml() {
         const path = message.payload.path;
         const body = JSON.parse(message.payload.body);
         window.__requests.push({ path, body });
-        const send = (value, status = 200) => reply({ status, body: JSON.stringify(value) });
+        const send = (value, status = 200) => reply({ status, body: JSON.stringify(value && typeof value === "object" ? { planning: currentPlanning, ...value } : value) });
+        if (body.expectedPlanning && body.expectedPlanning !== currentPlanning) {
+          send({error:{code:"PLANNING_CHANGED",message:"Planning target changed. Refresh to establish the new scope."}},409); return;
+        }
         if (path === "/changes") {
            if (failNextListing) { failNextListing = false;
              send({ error: { code: "CLI_UNAVAILABLE", message: "Cannot check listing" } }, 503); return; }
@@ -293,6 +303,17 @@ function hostHtml() {
           : reply(startResult);
         if (holdStart) pendingStarts.push(finish); else finish();
         return;
+      }
+      if (message.type === "workspace-read") {
+        window.__requests.push({path:message.type,body:message.payload});
+        const query = message.payload;
+        reply(query.kind === "projects" ? {kind:"projects",state:"ready",projects} :
+          query.kind === "worktrees" ? {kind:"worktrees",projectId:query.projectId,state:"ready",worktrees} :
+          {kind:"sessions",projectId:query.projectId,state:"ready",coverage:[],sessions});
+        return;
+      }
+      if (message.type === "open-session") {
+        window.__requests.push({path:message.type,body:message.payload}); reply(); return;
       }
       if (message.type === "open-url") {
         window.__requests.push({ path: "open-url", body: message.payload });
@@ -409,6 +430,246 @@ async function withPanel(run) {
   }
 }
 
+test("presentation modal backdrops dim every dialog without changing keyboard cancellation", async () => {
+  await withPanel(async (browser, url) => {
+    for (const width of [320, 1076]) {
+      for (const mode of ["dark", "light"]) {
+        const page = await browser.newPage({ viewport: { width, height: 700 } });
+        await page.goto(url);
+        const panel = page.frameLocator("iframe");
+        await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+        await page.evaluate((mode) => __theme(mode), mode);
+        await panel.locator(`html[data-oc-theme="${mode}"]`).waitFor();
+        const checkDialog = async (open, name) => {
+          for (const cancel of ["Escape", "button"]) {
+            await open();
+            const dialog = panel.getByRole("dialog", { name });
+            await dialog.waitFor();
+            const backdrop = await dialog.evaluate((node) => {
+              const style = getComputedStyle(node, "::backdrop");
+              return {
+                colour: style.backgroundColor,
+                backdropOpacity: style.opacity,
+                blur: style.backdropFilter,
+                focusInside: node.contains(document.activeElement),
+                opacity: getComputedStyle(node).opacity,
+              };
+            });
+            assert.equal(backdrop.colour, "rgb(0, 0, 0)");
+            assert.equal(backdrop.backdropOpacity, "0.35");
+            assert.equal(backdrop.blur, "none");
+            assert.equal(backdrop.opacity, "1");
+            assert.equal(backdrop.focusInside, true);
+            await page.keyboard.press("Tab");
+            assert.equal(
+              await dialog.evaluate((node) => node.contains(document.activeElement)),
+              true,
+            );
+            if (cancel === "Escape") await page.keyboard.press("Escape");
+            else await dialog.getByRole("button", { name: "cancel", exact: true }).click();
+            await dialog.waitFor({ state: "hidden" });
+            assert.equal(await panel.locator("dialog[open]").count(), 0);
+          }
+        };
+        await checkDialog(
+          () => panel.getByRole("button", { name: "new change", exact: true }).click(),
+          "New change",
+        );
+        await panel.getByRole("button", { name: "first-change", exact: true }).click();
+        await checkDialog(
+          () => panel.getByRole("button", { name: "Delete change", exact: true }).click(),
+          /Delete first-change/,
+        );
+        await panel.getByRole("button", { name: "Back to changes" }).click();
+        await page.evaluate(() => __edit("Completed"));
+        await panel.getByRole("button", { name: "refresh", exact: true }).click();
+        await panel
+          .getByRole("button", { name: "archive all", exact: true })
+          .and(panel.locator(":enabled"))
+          .waitFor();
+        await checkDialog(
+          () => panel.getByRole("button", { name: "archive all", exact: true }).click(),
+          "Archive all completed changes?",
+        );
+        assert.equal(
+          await page.evaluate(() =>
+            __requests.some((r) => ["/create", "/delete", "start-session"].includes(r.path)),
+          ),
+          false,
+        );
+        await page.close();
+      }
+    }
+  });
+});
+
+test("presentation footer keeps equal 12px control gaps and an external separator", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    const footer = panel.locator(".detail-footer");
+    const checkSpacing = async (wrapped = false) => {
+      const layout = await footer.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const buttons = [...node.querySelectorAll("button")]
+          .filter((button) => button.checkVisibility())
+          .map((button) => button.getBoundingClientRect());
+        const separator = getComputedStyle(node, "::before");
+        return {
+          topGap: Math.min(...buttons.map((rect) => rect.top)) - rect.top,
+          bottomGap: rect.bottom - Math.max(...buttons.map((rect) => rect.bottom)),
+          heights: buttons.map((rect) => rect.height),
+          rows: new Set(buttons.map((rect) => rect.top)).size,
+          separatorHeight: separator.height,
+          separatorBottom: separator.bottom,
+          separatorPosition: separator.position,
+          separatorColour: separator.backgroundColor,
+          borderWidth: getComputedStyle(node).borderTopWidth,
+          overflow: document.documentElement.scrollWidth > innerWidth,
+        };
+      });
+      assert.equal(layout.topGap, 12);
+      assert.equal(layout.bottomGap, 12);
+      assert.ok(layout.heights.every((height) => height === 28));
+      assert.equal(layout.separatorHeight, "1px");
+      assert.equal(layout.separatorPosition, "absolute");
+      assert.equal(layout.borderWidth, "0px");
+      assert.equal(
+        layout.separatorColour,
+        await footer.evaluate((node) => {
+          const probe = document.createElement("span");
+          probe.style.color = getComputedStyle(node).getPropertyValue("--oc-border");
+          node.append(probe);
+          const colour = getComputedStyle(probe).color;
+          probe.remove();
+          return colour;
+        }),
+      );
+      assert.equal(
+        parseFloat(layout.separatorBottom),
+        await footer.evaluate((node) => node.getBoundingClientRect().height),
+      );
+      assert.equal(layout.overflow, false);
+      if (wrapped) assert.ok(layout.rows > 1);
+    };
+    for (const width of [320, 1076]) {
+      await page.setViewportSize({ width, height: 700 });
+      for (const mode of ["dark", "light"]) {
+        await page.evaluate((mode) => __theme(mode), mode);
+        await panel.locator(`html[data-oc-theme="${mode}"]`).waitFor();
+        await checkSpacing();
+      }
+    }
+    await footer.getByRole("button", { name: "apply", exact: true }).click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __draft().startsWith("/openspec-apply-change first-change"));
+    await page.evaluate(() => __edit("Completed"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await footer.getByRole("button", { name: "verify", exact: true }).waitFor();
+    await page.setViewportSize({ width: 320, height: 700 });
+    await footer.evaluate((node) => {
+      node.style.width = "90px";
+    });
+    await checkSpacing(true);
+    await page.close();
+  });
+});
+
+test("presentation page fills short boards and preserves long board and detail scrolling", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 1076, height: 1000 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    for (const viewport of [
+      { width: 320, height: 1000 },
+      { width: 1076, height: 850 },
+    ]) {
+      await page.setViewportSize(viewport);
+      for (const mode of ["dark", "light"]) {
+        await page.evaluate((mode) => __theme(mode), mode);
+        await panel.locator(`html[data-oc-theme="${mode}"]`).waitFor();
+        const coverage = await panel.locator("html").evaluate((node) => ({
+          rootHeight: node.getBoundingClientRect().height,
+          bodyHeight: document.body.getBoundingClientRect().height,
+          boardHeight: document.querySelector(".board-shell").getBoundingClientRect().height,
+          viewportHeight: innerHeight,
+          overflow: node.scrollWidth > innerWidth,
+          colour: getComputedStyle(node).backgroundColor,
+        }));
+        assert.ok(coverage.boardHeight < coverage.viewportHeight);
+        assert.ok(coverage.rootHeight >= coverage.viewportHeight);
+        assert.ok(coverage.bodyHeight >= coverage.viewportHeight);
+        assert.equal(coverage.overflow, false);
+        assert.equal(coverage.colour, mode === "dark" ? "rgb(21, 25, 28)" : "rgb(255, 255, 255)");
+        for (const modal of [false, true]) {
+          if (modal) await panel.getByRole("button", { name: "new change", exact: true }).click();
+          const screenshot = (await page.screenshot()).toString("base64");
+          const colours = await panel.locator("html").evaluate(async (node, png) => {
+            const image = new Image();
+            image.src = `data:image/png;base64,${png}`;
+            await image.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const context = canvas.getContext("2d");
+            context.drawImage(image, 0, 0);
+            const pixels = context.getImageData(2, 0, 1, image.height).data;
+            const dialog = document.querySelector("dialog[open]")?.getBoundingClientRect();
+            const colours = new Set();
+            // The modal can span the sidebar. Sample only the exposed background.
+            for (let y = 2; y < image.height - 2; y++) {
+              if (dialog && y >= dialog.top - 2 && y <= dialog.bottom + 2) continue;
+              colours.add([...pixels.slice(y * 4, y * 4 + 3)].join(","));
+            }
+            return [...colours];
+          }, screenshot);
+          assert.equal(colours.length, 1, `Painted background seam in ${mode}, modal=${modal}`);
+          if (modal)
+            await panel
+              .getByRole("dialog", { name: "New change" })
+              .getByRole("button", { name: "cancel", exact: true })
+              .click();
+        }
+      }
+    }
+    await page.evaluate(() => {
+      for (let n = 0; n < 40; n++) __recreate(`long-board-${String(n).padStart(2, "0")}`);
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    const last = panel.getByRole("button", { name: "long-board-39", exact: true });
+    await last.waitFor();
+    await last.scrollIntoViewIfNeeded();
+    assert.equal(
+      await last.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return (
+          rect.top >= 0 && rect.bottom <= innerHeight && document.scrollingElement.scrollTop > 0
+        );
+      }),
+      true,
+    );
+    await page.evaluate(() => __document("proposal.md", "Long paragraph.\n\n".repeat(300)));
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await panel.locator(".document-content").filter({ hasText: "Long paragraph." }).waitFor();
+    const scrolling = await panel.locator(".detail-content").evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      return {
+        contentScrolled: node.scrollTop > 0,
+        outerHeight: document.scrollingElement.scrollHeight,
+        viewportHeight: innerHeight,
+        detailHeight: document.querySelector(".detail").getBoundingClientRect().height,
+      };
+    });
+    assert.equal(scrolling.contentScrolled, true);
+    assert.equal(scrolling.outerHeight, scrolling.viewportHeight);
+    assert.equal(scrolling.detailHeight, scrolling.viewportHeight);
+    await page.close();
+  });
+});
+
 test("one board load requests one listing and one summaries batch", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
@@ -420,6 +681,318 @@ test("one board load requests one listing and one summaries batch", async () => 
       paths.filter((path) => path.startsWith("/")),
       ["/changes", "/summaries"],
     );
+  });
+});
+
+test("Apply native menu dismisses without dispatch and prepares current-chat drafts on cards and detail", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const card = panel.locator(".change-card").filter({ hasText: "first-change" });
+    const trigger = card.getByRole("button", { name: "apply", exact: true });
+    await trigger.click();
+    await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).waitFor();
+    await panel.getByRole("menu").press("Escape");
+    assert.equal(
+      await page.evaluate(() =>
+        __requests.some((r) => r.path === "compose" || r.path === "start-session"),
+      ),
+      false,
+    );
+    assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+    await trigger.press("Enter");
+    await panel.getByRole("menu").press("ArrowDown");
+    await panel.getByRole("menu").press("Enter");
+    await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+    assert.match(await page.evaluate(() => __draft()), /^\/openspec-apply-change first-change/);
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await panel
+      .locator(".detail-footer")
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 2);
+    await page.close();
+  });
+});
+
+test("new-worktree Apply delegates a path-free first message and opens only after submission", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await page.evaluate(() =>
+      __startResult({
+        sessionId: "apply-session",
+        directory: "/new-worktree",
+        sent: "sent",
+        linked: true,
+        worktree: {
+          directory: "/new-worktree",
+          name: "first-change",
+          branch: "first-change",
+          status: "ready",
+        },
+      }),
+    );
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "open-session"), null, {
+      timeout: 3000,
+    });
+    const requests = await page.evaluate(() => __requests);
+    const start = requests.find((r) => r.path === "start-session").body;
+    assert.equal(start.projectId, "origin-project");
+    assert.deepEqual(start.worktree, { kind: "new", name: "first-change" });
+    assert.equal(start.navigation, "preserve");
+    assert.match(start.text, /^\/openspec-apply-change first-change/);
+    assert.doesNotMatch(start.text, /\/tmp\/|copy|symlink/);
+    assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+    assert.equal(
+      requests.some((r) => r.path === "compose" || r.path === "prompt"),
+      false,
+    );
+    assert.equal(requests.find((r) => r.path === "open-session").body.sessionId, "apply-session");
+    await page.close();
+  });
+});
+
+test("planning replacement closes stale confirmations and refresh retains search without automatic reload", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByLabel("Search changes", { exact: true }).fill("first");
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await panel.getByRole("tab", { name: /Tasks · Written/ }).waitFor();
+    await panel.getByRole("tab", { name: /Proposal · Written/ }).waitFor();
+    await page.evaluate(() => __planning("replacement"));
+    await panel.getByRole("button", { name: "Delete change", exact: true }).click();
+    await panel.getByRole("dialog").getByRole("button", { name: "delete", exact: true }).click();
+    await panel.getByText("Planning target changed. Refresh to establish the new scope.").waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/delete").length),
+      1,
+    );
+    await panel.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "Back to changes", exact: true }).click();
+    assert.equal(await panel.getByLabel("Search changes", { exact: true }).inputValue(), "first");
+    await panel.getByRole("button", { name: "first-change", exact: true }).click();
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "/tasks" && r.body.expectedPlanning === "replacement"),
+    );
+    await page.close();
+  });
+});
+
+test("worktree Apply preserves partial outcomes, inspects collisions and suppresses late navigation", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const launch = async () => {
+      await panel
+        .locator(".change-card")
+        .filter({ hasText: "first-change" })
+        .getByRole("button", { name: "apply", exact: true })
+        .click();
+      await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).click();
+    };
+    const tree = {
+      directory: "/retained",
+      name: "first-change",
+      branch: "first-change",
+      status: "ready",
+    };
+    for (const result of [
+      { sessionId: null, sent: "skipped", failure: "bootstrap-failed", worktree: tree },
+      { sessionId: null, sent: "skipped", failure: "session-create-failed", worktree: tree },
+      { sessionId: "retained-session", directory: "/retained", sent: "no-model", worktree: tree },
+      { sessionId: "retained-session", directory: "/retained", sent: "failed", worktree: tree },
+      { unexpected: true },
+    ]) {
+      const prior = await page.evaluate(() => __requests.filter((r) => r.path === "toast").length);
+      await page.evaluate((value) => __startResult(value), result);
+      await launch();
+      await page.waitForFunction(
+        (count) => __requests.filter((r) => r.path === "toast").length > count,
+        prior,
+      );
+      assert.equal(
+        await page.evaluate(() =>
+          __requests.some((r) => r.path === "open-session" || r.path === "compose"),
+        ),
+        false,
+      );
+    }
+    for (const code of ["HOST_REJECTED", "HOST_TIMEOUT"]) {
+      const prior = await page.evaluate(() => __requests.filter((r) => r.path === "toast").length);
+      await page.evaluate((value) => __startError(value), code);
+      await launch();
+      await page.waitForFunction(
+        (count) => __requests.filter((r) => r.path === "toast").length > count,
+        prior,
+      );
+      assert.match(
+        await page.evaluate(() => __requests.filter((r) => r.path === "toast").at(-1).body.message),
+        /uncertain.*Inspect/s,
+      );
+      assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+    }
+    const launches = await page.evaluate(
+      () => __requests.filter((r) => r.path === "start-session").length,
+    );
+    await page.evaluate((value) => __worktrees([value]), tree);
+    await launch();
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "toast" && /already exists/.test(r.body.message)),
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
+      launches,
+    );
+    await page.evaluate(() => {
+      __worktrees([]);
+      __holdStart();
+      __startResult({
+        sessionId: "late",
+        directory: "/late",
+        sent: "sent",
+        worktree: {
+          directory: "/late",
+          name: "first-change",
+          branch: "first-change",
+          status: "ready",
+        },
+      });
+    });
+    await launch();
+    await page.waitForFunction(
+      (count) => __requests.filter((r) => r.path === "start-session").length === count + 1,
+      launches,
+    );
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    assert.equal(
+      await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).isDisabled(),
+      true,
+    );
+    await panel.getByRole("menu").press("Escape");
+    const feedback = await page.evaluate(() => __requests.filter((r) => r.path === "toast").length);
+    await page.evaluate(() => {
+      __session({ id: "unrelated" });
+      __releaseStart();
+    });
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.some((r) => r.path === "open-session")),
+      false,
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "toast").length),
+      feedback,
+    );
+    assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
+    await page.close();
+  });
+});
+
+test("worktree Apply resolves worktree ownership and fails missing projects without creation", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const launch = async () => {
+      await panel
+        .locator(".change-card")
+        .filter({ hasText: "first-change" })
+        .getByRole("button", { name: "apply", exact: true })
+        .click();
+      await panel.getByRole("menuitem", { name: "Run in new worktree", exact: true }).click();
+    };
+    await page.evaluate(() => __projects([]));
+    await launch();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
+    assert.equal(
+      await page.evaluate(() => __requests.some((r) => r.path === "start-session")),
+      false,
+    );
+    await page.evaluate(() => {
+      __projects([{ id: "main-owner", directory: "/main", name: "Main" }]);
+      __worktrees([
+        {
+          directory: "/tmp/fixture-project",
+          name: "existing",
+          branch: "existing",
+          status: "ready",
+        },
+      ]);
+      __startResult({
+        sessionId: "owned",
+        directory: "/created",
+        sent: "sent",
+        worktree: {
+          directory: "/created",
+          name: "first-change",
+          branch: "first-change",
+          status: "ready",
+        },
+      });
+    });
+    await launch();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "open-session"));
+    assert.equal(
+      await page.evaluate(() => __requests.find((r) => r.path === "start-session").body.projectId),
+      "main-owner",
+    );
+    await page.close();
+  });
+});
+
+test("Apply menu rejects a selection from a replaced chat but accepts a newly opened menu", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const trigger = panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true });
+    await trigger.click();
+    await page.evaluate(() => __session({ id: "replacement-chat" }));
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await assert.rejects(
+      page.waitForFunction(
+        () => __requests.some((r) => r.path === "compose" || r.path === "start-session"),
+        null,
+        { timeout: 500 },
+      ),
+      /Timeout/,
+    );
+    assert.equal(
+      await page.evaluate(() =>
+        __requests.some((r) => r.path === "compose" || r.path === "start-session"),
+      ),
+      false,
+    );
+    await trigger.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+    await page.close();
   });
 });
 
@@ -2042,6 +2615,7 @@ test("safe creation refreshes the board and prompts stay unsent", async () => {
       .filter({ hasText: "created-change" })
       .getByRole("button", { name: "apply" })
       .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __requests.some((request) => request.path === "compose"));
     const prompt = await page.evaluate(
       () => __requests.find((request) => request.path === "compose")?.body,
@@ -2067,8 +2641,9 @@ test("a fresh-chat draft receives replacement composition without sending or sta
     await panel
       .locator(".change-card")
       .filter({ hasText: "first-change" })
-      .getByRole("button", { name: "continue", exact: true })
+      .getByRole("button", { name: "apply", exact: true })
       .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(
       () => __requests.some((request) => request.path === "compose"),
       null,
@@ -2104,10 +2679,11 @@ test("composer rejection reports failure; stale session and directory replies do
     const action = panel
       .locator(".change-card")
       .filter({ hasText: "first-change" })
-      .getByRole("button", { name: "continue", exact: true });
+      .getByRole("button", { name: "apply", exact: true });
     await action.waitFor();
     await page.evaluate(() => __failCompose());
     await action.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() =>
       __requests.some(
         (request) =>
@@ -2122,6 +2698,7 @@ test("composer rejection reports failure; stale session and directory replies do
       __failCompose();
     });
     await action.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 2);
     await page.evaluate(() => {
       __session(null);
@@ -2137,6 +2714,7 @@ test("composer rejection reports failure; stale session and directory replies do
       __failCompose();
     });
     await action.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 3);
     await page.evaluate(() => {
       __directory("/tmp/other-project");
@@ -2161,8 +2739,9 @@ test("detail composer rejection reports host feedback without board navigation o
     await page.evaluate(() => __failCompose());
     await panel
       .locator(".detail-footer")
-      .getByRole("button", { name: "continue", exact: true })
+      .getByRole("button", { name: "apply", exact: true })
       .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() =>
       __requests.some(
         (request) =>
@@ -2192,11 +2771,12 @@ test("canonical-root replacement discards late composer success and failure with
     const action = panel
       .locator(".change-card")
       .filter({ hasText: "first-change" })
-      .getByRole("button", { name: "continue", exact: true });
+      .getByRole("button", { name: "apply", exact: true });
     await action.waitFor();
 
     await page.evaluate(() => __holdCompose());
     await action.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 1);
     await page.evaluate(() => __root("/tmp/fixture-project/other-root"));
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
@@ -2210,6 +2790,7 @@ test("canonical-root replacement discards late composer success and failure with
       __failCompose();
     });
     await action.click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 2);
     await page.evaluate(() => __root("/tmp/fixture-project/third-root"));
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
@@ -2236,6 +2817,7 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
       .filter({ hasText: "second-change" })
       .getByRole("button", { name: "apply" })
       .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await page.waitForFunction(() => __draft().startsWith("/openspec-apply-change second-change"));
     assert.match(await page.evaluate(() => __draft()), /Complete all remaining tasks/);
     assert.doesNotMatch(await page.evaluate(() => __draft()), /tasks complete\./);
@@ -3408,7 +3990,7 @@ test("confirmed unavailable detail keeps the selection and disables its workflow
       await panel
         .locator(".change-card")
         .filter({ hasText: "first-change" })
-        .getByRole("button", { name: "continue", exact: true })
+        .getByRole("button", { name: "apply", exact: true })
         .isDisabled(),
       true,
     );
@@ -3882,7 +4464,7 @@ test("uncertain creation reconciles in the original context and opens the observ
       await page.evaluate(
         () => __requests.find((item) => item.path === "/changes" && item.body.expectedRoot).body,
       ),
-      { directory, expectedRoot: root },
+      { directory, expectedRoot: root, expectedPlanning: "fixture-planning" },
     );
     await page.close();
   });
@@ -4056,7 +4638,12 @@ test("uncertain creation checks its original project after the selected project 
       await page.evaluate(() =>
         __requests.filter((item) => item.path === "/changes" && item.body.expectedRoot),
       ),
-      [{ path: "/changes", body: { directory, expectedRoot: root } }],
+      [
+        {
+          path: "/changes",
+          body: { directory, expectedRoot: root, expectedPlanning: "fixture-planning" },
+        },
+      ],
     );
     assert.equal(await panel.getByRole("button", { name: "Inspect change" }).isDisabled(), true);
     assert.equal(

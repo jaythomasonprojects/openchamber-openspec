@@ -6,6 +6,7 @@
     <title>OpenSpec</title>
     <style>
       :root {
+        min-height: 100dvh;
         background: transparent;
         color: var(--oc-fg);
         font-family: var(--oc-font, system-ui, sans-serif);
@@ -19,6 +20,7 @@
         visibility: hidden;
       }
       body {
+        min-height: 100dvh;
         margin: 0;
         font-size: 14px;
       }
@@ -398,13 +400,23 @@
         padding-top: 12px;
       }
       .detail-footer {
+        position: relative;
         flex: none;
         display: flex;
         justify-content: flex-end;
         flex-wrap: wrap;
         gap: 6px;
         padding: 12px 16px;
-        border-top: 1px solid var(--oc-border, #30363c);
+      }
+      .detail-footer::before {
+        content: "";
+        position: absolute;
+        bottom: 100%;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: var(--oc-border, #30363c);
+        pointer-events: none;
       }
       .stage-label {
         flex: none;
@@ -532,6 +544,10 @@
       .document-content th {
         background: var(--oc-elevated);
         text-align: left;
+      }
+      dialog::backdrop {
+        background: black;
+        opacity: 0.35;
       }
       dialog:not(.detail) {
         width: min(440px, calc(100vw - 32px));

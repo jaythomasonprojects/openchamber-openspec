@@ -29,7 +29,12 @@ export function mountDeleteDialog(
   let disposed = false;
   const unresolved = new Set<string>();
   const key = (attempt: Target) =>
-    JSON.stringify([attempt.scope.directory, attempt.scope.root, attempt.name]);
+    JSON.stringify([
+      attempt.scope.directory,
+      attempt.scope.root,
+      attempt.scope.planning,
+      attempt.name,
+    ]);
   const matches = (attempt: Target) => {
     const current = callbacks.current();
     return (
@@ -101,7 +106,11 @@ export function mountDeleteDialog(
       display();
     }
     try {
-      const listing = await client.list(attempt.scope.directory, attempt.scope.root);
+      const listing = await client.list(
+        attempt.scope.directory,
+        attempt.scope.root,
+        attempt.scope.planning,
+      );
       if (disposed || !matches(attempt) || target !== attempt) return;
       unresolved.delete(key(attempt));
       if (!listing.changes.some((item) => item.id === attempt.name)) {

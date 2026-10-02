@@ -1,6 +1,11 @@
 import { isChangeName, type Artifact } from "./model.js";
 
-export type Context = { directory: string; root: string };
+export type Context = { directory: string; root: string; planning: string };
+export function decodePlanning(value: unknown): string {
+  if (typeof value !== "string" || !value.length || value.length > 4096 || value.includes("\0"))
+    throw new Error("Invalid planning identity.");
+  return value;
+}
 export type ListingEntry = { id: string; completedTasks: number; totalTasks: number };
 export type Task = {
   id: string;
@@ -56,6 +61,7 @@ export function decodeListing(value: unknown): {
   directory: string;
   root: string;
   changes: ListingEntry[];
+  planning: string;
 } {
   const input = record(value);
   const directory = string(input.directory);
@@ -64,7 +70,7 @@ export function decodeListing(value: unknown): {
   const changes = input.changes.map((item) => decodeListingEntry(item));
   if (new Set(changes.map((item) => item.id)).size !== changes.length)
     throw new Error("Duplicate change.");
-  return { directory, root, changes };
+  return { directory, root, planning: decodePlanning(input.planning), changes };
 }
 
 export function decodeArtifacts(value: unknown, requires: unknown): Artifact[] {
@@ -147,7 +153,11 @@ export type SummaryResult =
   | { id: string; summary: ChangeMetadata }
   | { id: string; error: { code: string; message: string } };
 
-export function decodeSummaries(value: unknown): { root: string; changes: SummaryResult[] } {
+export function decodeSummaries(value: unknown): {
+  root: string;
+  planning: string;
+  changes: SummaryResult[];
+} {
   const input = record(value);
   const root = string(input.root);
   if (!Array.isArray(input.changes)) throw new Error("Invalid summaries.");
@@ -166,7 +176,7 @@ export function decodeSummaries(value: unknown): { root: string; changes: Summar
   });
   if (new Set(changes.map((entry) => entry.id)).size !== changes.length)
     throw new Error("Duplicate change.");
-  return { root, changes };
+  return { root, planning: decodePlanning(input.planning), changes };
 }
 
 export function decodeTaskResponse(value: unknown): Task[] {

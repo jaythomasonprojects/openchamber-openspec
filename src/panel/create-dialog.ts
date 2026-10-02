@@ -131,7 +131,11 @@ export function mountCreateDialog(
 
   const sameContext = (scope: Scope) => {
     const current = callbacks.current();
-    return current?.directory === scope.directory && current.root === scope.root;
+    return (
+      current?.directory === scope.directory &&
+      current.root === scope.root &&
+      current.planning === scope.planning
+    );
   };
   function discardDraft() {
     draftScope = null;
@@ -174,7 +178,11 @@ export function mountCreateDialog(
     messageText = "Checking the original project for a matching change…";
     paint();
     try {
-      const listing = await client.list(original.scope.directory, original.scope.root);
+      const listing = await client.list(
+        original.scope.directory,
+        original.scope.root,
+        original.scope.planning,
+      );
       if (disposed || currentGeneration !== generation) return;
       if (listing.changes.some((entry) => entry.id === original.name)) {
         mode = "observed-existing";

@@ -95,17 +95,22 @@ export function createOpenSpecService(
       const directory = requiredString(body, "directory");
       const expectedRoot =
         body.expectedRoot === undefined ? undefined : requiredString(body, "expectedRoot");
+      const expectedPlanning =
+        body.expectedPlanning === undefined ? undefined : requiredString(body, "expectedPlanning");
+      if (expectedPlanning && (expectedPlanning.length > 4096 || expectedPlanning.includes("\0")))
+        throw serviceError("BAD_REQUEST", "Invalid planning identity.");
       const path = new URL(request.url, "http://localhost").pathname;
       const work =
         path === "/changes"
-          ? adapter.changes(directory, expectedRoot)
+          ? adapter.changes(directory, expectedRoot, expectedPlanning)
           : path === "/summaries"
-            ? adapter.summaries(directory, requiredString(body, "expectedRoot"))
+            ? adapter.summaries(directory, requiredString(body, "expectedRoot"), expectedPlanning)
             : path === "/tasks"
               ? adapter.tasks(
                   directory,
                   requiredString(body, "change"),
                   requiredString(body, "expectedRoot"),
+                  expectedPlanning,
                 )
               : path === "/document"
                 ? adapter.documentFor(
@@ -114,6 +119,7 @@ export function createOpenSpecService(
                     requiredString(body, "artifactId"),
                     body.selector === undefined ? undefined : requiredString(body, "selector"),
                     requiredString(body, "expectedRoot"),
+                    expectedPlanning,
                   )
                 : path === "/create"
                   ? adapter.createChange(
@@ -121,6 +127,7 @@ export function createOpenSpecService(
                       requiredString(body, "name"),
                       requiredString(body, "goal"),
                       requiredString(body, "expectedRoot"),
+                      expectedPlanning,
                     )
                   : path === "/delete"
                     ? adapter.deleteChange(
@@ -132,6 +139,7 @@ export function createOpenSpecService(
                             throw serviceError("CLI_TIMEOUT", "OpenSpec request timed out.", 504);
                           mutationDispatched = true;
                         },
+                        expectedPlanning,
                       )
                     : Promise.resolve({
                         ok: false as const,

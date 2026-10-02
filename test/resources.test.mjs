@@ -80,3 +80,29 @@ test("capacity errors do not evict loaded observations or truncate results", asy
   assert.equal(resources.document(scope, "change", "specs", "one").state.value, "one");
   resources.dispose();
 });
+
+test("planning identity replacement discards late reads even with identical directory and root", async () => {
+  const waiting = deferred();
+  let reads = 0;
+  const resources = createResources({
+    tasks: async () => [],
+    document: () => {
+      reads++;
+      return waiting.promise;
+    },
+  });
+  const before = { ...scope, planning: "before" };
+  const after = { ...scope, planning: "after" };
+  resources.setContext(before);
+  const old = resources.document(before, "change", "proposal", "proposal.md");
+  resources.setContext(after);
+  waiting.resolve("Old target");
+  assert.equal((await old.completion).value, null);
+  assert.equal(
+    resources.document(before, "change", "proposal", "proposal.md").state.error.message,
+    "OpenSpec context changed.",
+  );
+  await resources.document(after, "change", "proposal", "proposal.md").completion;
+  assert.equal(reads, 2);
+  resources.dispose();
+});

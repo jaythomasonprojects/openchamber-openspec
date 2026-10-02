@@ -18,8 +18,8 @@ export class ServiceRequestError extends Error {
   }
 }
 
-export type Listing = { directory: string; root: string; changes: ListingEntry[] };
-export type Scope = { directory: string; root: string };
+export type Listing = Scope & { changes: ListingEntry[] };
+export type Scope = { directory: string; root: string; planning: string };
 
 function invalid(): ServiceRequestError {
   return new ServiceRequestError(
@@ -71,14 +71,21 @@ export function createClient(host: HostClient) {
   };
 
   return {
-    list: async (directory: string, expectedRoot?: string): Promise<Listing> => {
+    list: async (
+      directory: string,
+      expectedRoot?: string,
+      expectedPlanning?: string,
+    ): Promise<Listing> => {
       const value = await request("/changes", {
         directory,
         ...(expectedRoot ? { expectedRoot } : {}),
+        ...(expectedPlanning ? { expectedPlanning } : {}),
       });
       const listing = decode(value, decodeListing);
       if (listing.directory !== directory || (expectedRoot && listing.root !== expectedRoot))
         throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+      if (expectedPlanning && listing.planning !== expectedPlanning)
+        throw new ServiceRequestError("PLANNING_CHANGED", "OpenSpec planning target changed.");
       return listing;
     },
     summaries: async (
@@ -88,11 +95,17 @@ export function createClient(host: HostClient) {
       ({ id: string; summary: ChangeSummary } | { id: string; error: ServiceRequestError })[]
     > => {
       const value = decode(
-        await request("/summaries", { directory: scope.directory, expectedRoot: scope.root }),
+        await request("/summaries", {
+          directory: scope.directory,
+          expectedRoot: scope.root,
+          expectedPlanning: scope.planning,
+        }),
         decodeSummaries,
       );
       if (value.root !== scope.root)
         throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+      if (value.planning !== scope.planning)
+        throw new ServiceRequestError("PLANNING_CHANGED", "OpenSpec planning target changed.");
       const byId = new Map(value.changes.map((item) => [item.id, item]));
       return entries.map((entry) => {
         const item = byId.get(entry.id);
@@ -118,7 +131,12 @@ export function createClient(host: HostClient) {
     },
     tasks: async (scope: Scope, change: string): Promise<Task[]> => {
       return decode(
-        await request("/tasks", { ...scope, expectedRoot: scope.root, change }),
+        await request("/tasks", {
+          ...scope,
+          expectedRoot: scope.root,
+          expectedPlanning: scope.planning,
+          change,
+        }),
         decodeTaskResponse,
       );
     },
@@ -132,6 +150,7 @@ export function createClient(host: HostClient) {
         await request("/document", {
           ...scope,
           expectedRoot: scope.root,
+          expectedPlanning: scope.planning,
           change,
           artifactId,
           selector,
@@ -149,7 +168,13 @@ export function createClient(host: HostClient) {
       let value: Record<string, unknown>;
       try {
         value = record(
-          await request("/create", { ...scope, expectedRoot: scope.root, name, goal }),
+          await request("/create", {
+            ...scope,
+            expectedRoot: scope.root,
+            expectedPlanning: scope.planning,
+            name,
+            goal,
+          }),
         );
       } catch (caught) {
         if (
@@ -175,7 +200,14 @@ export function createClient(host: HostClient) {
     delete: async (scope: Scope, change: string): Promise<void> => {
       let value: Record<string, unknown>;
       try {
-        value = record(await request("/delete", { ...scope, expectedRoot: scope.root, change }));
+        value = record(
+          await request("/delete", {
+            ...scope,
+            expectedRoot: scope.root,
+            expectedPlanning: scope.planning,
+            change,
+          }),
+        );
       } catch (caught) {
         if (
           caught instanceof ServiceRequestError &&

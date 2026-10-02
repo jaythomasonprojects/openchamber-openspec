@@ -14,7 +14,7 @@ const { createClient } = await import(
 );
 
 test("summary decoding preserves area text, order and duplicates and rejects invalid fields", async () => {
-  const scope = { directory: "/project", root: "/project" };
+  const scope = { directory: "/project", root: "/project", planning: "identity" };
   const entry = { id: "change", completedTasks: 1, totalTasks: 2 };
   let affectedAreas = ["auth", " api ", "auth", "<b>literal</b>"];
   const client = createClient({
@@ -22,6 +22,7 @@ test("summary decoding preserves area text, order and duplicates and rejects inv
       status: 200,
       body: JSON.stringify({
         root: scope.root,
+        planning: scope.planning,
         changes: [
           {
             id: entry.id,
@@ -50,7 +51,7 @@ test("summary decoding preserves area text, order and duplicates and rejects inv
 });
 
 test("batch decoding reconciles listing IDs and rejects malformed or mismatched entries", async () => {
-  const scope = { directory: "/project", root: "/project" };
+  const scope = { directory: "/project", root: "/project", planning: "identity" };
   const summary = {
     id: "good",
     root: scope.root,
@@ -62,6 +63,7 @@ test("batch decoding reconciles listing IDs and rejects malformed or mismatched 
   };
   let value = {
     root: scope.root,
+    planning: scope.planning,
     changes: [
       { id: "good", summary },
       { id: "bad", error: { code: "OPENSPEC_ERROR", message: "Bad schema" } },
@@ -96,9 +98,9 @@ test("batch decoding reconciles listing IDs and rejects malformed or mismatched 
     [{ id: "bad" }],
     [{ id: "good", summary, error: { code: "BAD", message: "Bad" } }],
   ]) {
-    value = { root: scope.root, changes };
+    value = { root: scope.root, planning: scope.planning, changes };
     await assert.rejects(client.summaries(scope, entries), { code: "BAD_SERVICE_DATA" });
   }
-  value = { root: "/other", changes: [] };
+  value = { root: "/other", planning: scope.planning, changes: [] };
   await assert.rejects(client.summaries(scope, entries), { code: "ROOT_CHANGED" });
 });

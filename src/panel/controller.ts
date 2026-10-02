@@ -9,6 +9,7 @@ import { mountCreateDialog } from "./create-dialog.js";
 import { mountDeleteDialog } from "./delete-dialog.js";
 import { mountArchiveDialog } from "./archive-dialog.js";
 import { archiveAllPrompt } from "./archive-prompt.js";
+import { inspectWorktreeDestination } from "./worktree.js";
 
 export function mountController(host: HostClient, appRoot: HTMLElement): () => void {
   const client = createClient(host);
@@ -48,6 +49,9 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   let readGeneration = 0;
   let boardScroll = 0;
   let archivePending = false;
+  const worktreePending = new Set<string>();
+  const worktreeKey = (scope: Scope, id: string) =>
+    JSON.stringify([scope.directory, scope.root, scope.planning, id]);
   let disposed = false;
 
   function invalidate() {
@@ -73,6 +77,14 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     readGeneration++;
     search = "";
     errorMessage = null;
+    render();
+  }
+
+  function planningChanged() {
+    const retainedSearch = search;
+    invalidate();
+    search = retainedSearch;
+    errorMessage = "Planning target changed. Refresh to establish the new scope.";
     render();
   }
 
@@ -114,9 +126,9 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
           return;
         }
         scope =
-          scope?.root === listing.root
+          scope?.root === listing.root && scope.planning === listing.planning
             ? scope
-            : { directory: currentDirectory, root: listing.root };
+            : { directory: currentDirectory, root: listing.root, planning: listing.planning };
         const current = scope;
         resources.setContext(current);
         const listed = new Set(listing.changes.map((entry) => entry.id));
@@ -194,6 +206,10 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
           } catch (caught) {
             if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
               return;
+            if (caught instanceof ServiceRequestError && caught.code === "PLANNING_CHANGED") {
+              planningChanged();
+              return;
+            }
             if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
               invalidate();
               loadBoard();
@@ -222,6 +238,10 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
           operation !== boardOperation
         )
           return;
+        if (caught instanceof ServiceRequestError && caught.code === "PLANNING_CHANGED") {
+          planningChanged();
+          return;
+        }
         if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
           invalidate();
           loadBoard();
@@ -270,20 +290,27 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     change: DerivedChange,
     captured: Scope | null,
     originatingEpoch: number,
-    intent: "primary" | "verify" | "explore",
+    intent: "primary" | "worktree" | "verify" | "explore",
+    originatingSession: string | null = sessionId,
   ) {
     const current = changes.find((item) => item.id === change.id);
     if (
       !captured ||
       scope !== captured ||
       epoch !== originatingEpoch ||
+      sessionId !== originatingSession ||
       unavailableIds.has(change.id) ||
       !current ||
       (intent === "verify" && current.stage !== "complete") ||
       (intent === "explore" && current.stage !== "planning") ||
-      (intent === "primary" && current.stage !== change.stage)
+      ((intent === "primary" || intent === "worktree") && current.stage !== change.stage)
     )
       return;
+    if (intent === "worktree") {
+      if (current.stage !== "ready" && current.stage !== "progress") return;
+      await runInWorktree(change, captured, originatingEpoch);
+      return;
+    }
     const expectedSession = sessionId;
     try {
       await host.compose({ text: actionPrompt(change, intent), mode: "replace" });
@@ -304,8 +331,98 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
     }
   }
 
+  async function runInWorktree(change: DerivedChange, captured: Scope, originatingEpoch: number) {
+    const key = worktreeKey(captured, change.id);
+    if (worktreePending.has(key)) return;
+    const expectedSession = sessionId;
+    const current = () =>
+      !disposed &&
+      scope === captured &&
+      epoch === originatingEpoch &&
+      sessionId === expectedSession &&
+      !unavailableIds.has(change.id) &&
+      changes.some((item) => item.id === change.id && item.stage === change.stage);
+    worktreePending.add(key);
+    render();
+    let dispatched = false;
+    let knownSession: string | null = null;
+    try {
+      const project = await inspectWorktreeDestination(host, captured.directory, change.id);
+      if (!current()) return;
+      const listing = await client.list(captured.directory, captured.root, captured.planning);
+      if (!current()) return;
+      const listed = listing.changes.find((item) => item.id === change.id);
+      if (!listed || (listed.totalTasks > 0 && listed.completedTasks === listed.totalTasks))
+        throw new Error("This change is no longer applicable. Refresh before starting Apply.");
+      dispatched = true;
+      const result = await host.startSession({
+        providerId: "openspec-board",
+        id: change.id,
+        title: `Apply ${change.id}`,
+        url: "https://openspec.dev/docs/quickstart",
+        projectId: project.id,
+        worktree: { kind: "new", name: change.id },
+        navigation: "preserve",
+        text: actionPrompt(change, "primary"),
+      });
+      knownSession = result.sessionId;
+      if (!current()) return;
+      const resource = result.worktree
+        ? ` Worktree ${result.worktree.name} at ${result.worktree.directory} is retained.`
+        : "";
+      if (!result.sessionId || result.sent !== "sent") {
+        await host.toast({
+          kind: "error",
+          persistent: true,
+          message: result.sessionId
+            ? `Session ${result.sessionId} exists, but Apply submission was not confirmed (${result.sent}).${resource} Inspect it before another attempt.`
+            : `Apply creation failed (${"failure" in result ? result.failure : "unknown"}).${resource} Inspect worktrees and sessions before another attempt.`,
+        });
+        return;
+      }
+      if (
+        !result.directory ||
+        !result.worktree ||
+        result.worktree.name !== change.id ||
+        result.worktree.directory !== result.directory
+      ) {
+        await host.toast({
+          kind: "error",
+          persistent: true,
+          message: `Session ${result.sessionId} was returned with an unexpected worktree result.${resource} Inspect it before another attempt.`,
+        });
+        return;
+      }
+      await host.toast({
+        kind: result.linked === false ? "info" : "success",
+        message: `Apply submitted in session ${result.sessionId}.${result.linked === false ? " Its workflow reference could not be saved." : ""}`,
+      });
+      if (current()) await host.openSession(result.sessionId);
+    } catch (caught) {
+      if (!current()) return;
+      await host.toast({
+        kind: "error",
+        persistent: dispatched,
+        message: knownSession
+          ? `Apply session ${knownSession} exists, but it could not be opened. Inspect that session; submission will not be repeated.`
+          : dispatched
+            ? `Apply launch outcome is uncertain. A worktree, session or sent prompt may already exist. Inspect worktrees and sessions before another attempt; this launch will not be retried automatically. ${caught instanceof Error ? caught.message : ""}`
+            : caught instanceof Error
+              ? caught.message
+              : "Worktree inspection failed. No creation was requested.",
+      });
+    } finally {
+      worktreePending.delete(key);
+      if (!disposed) render();
+    }
+  }
+
   function applyContentError(state: ReadState<unknown> | null, captured: Scope, change: string) {
     if (!(state?.error instanceof ServiceRequestError)) return false;
+    if (state.error.code === "PLANNING_CHANGED") {
+      planningChanged();
+      return true;
+    }
     if (state.error.code === "ROOT_CHANGED") {
       invalidate();
       loadBoard();
@@ -467,11 +584,20 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   const createView = mountCreateDialog(client, {
     current: () => scope,
     created: (origin) => {
-      if (scope?.directory === origin.directory && scope.root === origin.root)
+      if (
+        scope?.directory === origin.directory &&
+        scope.root === origin.root &&
+        scope.planning === origin.planning
+      )
         loadBoard(true, true);
     },
     inspect: (origin, name) => {
-      if (scope?.directory !== origin.directory || scope.root !== origin.root) return;
+      if (
+        scope?.directory !== origin.directory ||
+        scope.root !== origin.root ||
+        scope.planning !== origin.planning
+      )
+        return;
       pendingInspection = { scope, epoch, name, minOperation: boardOperation + 1 };
       loadBoard(true, true);
     },
@@ -666,6 +792,8 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   });
 
   function render() {
+    const originatingSession = sessionId;
+    const detailChange = selectedChange;
     createView.update();
     deleteView.update();
     archiveView.update();
@@ -689,6 +817,7 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
         change,
         stale: staleIds.has(change.id),
         unavailable: unavailableIds.has(change.id),
+        pending: !!captured && worktreePending.has(worktreeKey(captured, change.id)),
         open: () =>
           openDetail(
             changes.find((item) => item.id === change.id) ?? change,
@@ -696,12 +825,7 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
             originatingEpoch,
           ),
         action: (intent) =>
-          void preparePrompt(
-            changes.find((item) => item.id === change.id) ?? change,
-            captured,
-            originatingEpoch,
-            intent,
-          ),
+          void preparePrompt(change, captured, originatingEpoch, intent, originatingSession),
       })),
     });
     boardView.setVisible(!selectedChange);
@@ -714,11 +838,22 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
             files,
             tasks: taskState,
             unavailable: unavailableIds.has(selectedChange.id),
+            pending: !!captured && worktreePending.has(worktreeKey(captured, selectedChange.id)),
             loading,
             refreshError:
               errorMessage ??
               failures.find((item) => item.id === selectedChange?.id)?.error ??
               null,
+            primaryAction: (intent) => {
+              if (detailChange)
+                void preparePrompt(
+                  detailChange,
+                  captured,
+                  originatingEpoch,
+                  intent,
+                  originatingSession,
+                );
+            },
           }
         : null,
     );
@@ -741,6 +876,7 @@ export function mountController(host: HostClient, appRoot: HTMLElement): () => v
   });
   const offSession = host.onSession((nextSession) => {
     sessionId = nextSession?.id ?? null;
+    render();
   });
   return () => {
     disposed = true;

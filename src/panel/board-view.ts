@@ -1,6 +1,7 @@
 import { mountButton, mountProgress, mountSearchField } from "@openchamber/sdk/ui";
 import type { DerivedChange } from "../model.js";
-import { stages, workflowLabel } from "./workflow.js";
+import { stages } from "./workflow.js";
+import { mountPrimaryAction } from "./primary-action.js";
 import { mountHelpButton } from "./help-button.js";
 import { addButtonIcon } from "./button-icon.js";
 import { mountAreaBadges } from "./area-badges.js";
@@ -10,7 +11,8 @@ export type BoardCard = {
   stale: boolean;
   unavailable: boolean;
   open: () => void;
-  action: (intent: "primary" | "verify" | "explore") => void;
+  pending?: boolean;
+  action: (intent: "primary" | "worktree" | "verify" | "explore") => void;
 };
 export type BoardState = {
   directory: string | null;
@@ -132,7 +134,7 @@ export function mountBoardView(
       progressLabel: HTMLElement;
       progressRoot: HTMLElement;
       progress: ReturnType<typeof mountProgress>;
-      action: ReturnType<typeof mountButton>;
+      action: ReturnType<typeof mountPrimaryAction>;
       explore: ReturnType<typeof mountButton>;
       exploreRoot: HTMLElement;
       verify: ReturnType<typeof mountButton>;
@@ -163,12 +165,7 @@ export function mountBoardView(
       const actionRoot = document.createElement("span");
       actionRoot.className = "card-actions";
       const id = item.change.id;
-      const action = mountButton(actionRoot, {
-        label: "propose",
-        variant: "default",
-        size: "sm",
-        onClick: () => cards.get(id)?.current.action("primary"),
-      });
+      const action = mountPrimaryAction(actionRoot);
       const exploreRoot = document.createElement("span");
       const explore = mountButton(exploreRoot, {
         label: "explore",
@@ -219,8 +216,11 @@ export function mountBoardView(
       label: `${change.completedTasks} of ${change.totalTasks} tasks complete`,
     });
     entry.action.update({
-      label: workflowLabel(change.stage),
+      id: change.id,
+      stage: change.stage,
       disabled: item.unavailable,
+      pending: item.pending,
+      action: item.action,
     });
     entry.explore.update({ disabled: item.unavailable });
     entry.exploreRoot.hidden = change.stage !== "planning";

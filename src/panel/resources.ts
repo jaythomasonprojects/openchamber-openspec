@@ -20,9 +20,9 @@ export function createResources(
   let generation = 0;
   let bytes = 0;
   let disposed = false;
-  const scopeKey = (scope: Scope) => JSON.stringify([scope.directory, scope.root]);
+  const scopeKey = (scope: Scope) => JSON.stringify([scope.directory, scope.root, scope.planning]);
   const keyFor = (scope: Scope, change: string, kind: string, artifact = "", selector = "") =>
-    JSON.stringify([scope.directory, scope.root, change, kind, artifact, selector]);
+    JSON.stringify([scope.directory, scope.root, scope.planning, change, kind, artifact, selector]);
   const active = (scope: Scope) => !disposed && !!context && scopeKey(context) === scopeKey(scope);
   const state = <T>(entry: Entry<T>): ReadState<T> => ({
     value: entry.value,
@@ -119,7 +119,8 @@ export function createResources(
       );
     },
     invalidateChange(scope: Scope, change: string) {
-      const prefix = JSON.stringify([scope.directory, scope.root, change]).slice(0, -1) + ",";
+      const prefix =
+        JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
       for (const [key, entry] of cache)
         if (key.startsWith(prefix)) {
           bytes -= entry.bytes;

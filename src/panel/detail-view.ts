@@ -4,7 +4,8 @@ import type { DerivedChange } from "../model.js";
 import type { ReadState } from "./resources.js";
 import { mountDocumentView } from "./document-view.js";
 import { mountTasksView } from "./tasks-view.js";
-import { stageLabel, workflowLabel } from "./workflow.js";
+import { stageLabel } from "./workflow.js";
+import { mountPrimaryAction, type PrimaryIntent } from "./primary-action.js";
 import { addButtonIcon } from "./button-icon.js";
 import { mountAreaBadges } from "./area-badges.js";
 import { documentFormat } from "./document-renderer.js";
@@ -18,6 +19,8 @@ export type DetailState = {
   unavailable: boolean;
   loading: boolean;
   refreshError: string | null;
+  pending?: boolean;
+  primaryAction: (intent: PrimaryIntent) => void;
 };
 
 const tones = {
@@ -184,12 +187,7 @@ export function mountDetailView(
   const footer = document.createElement("footer");
   footer.className = "detail-footer";
   const actionRoot = document.createElement("span");
-  const action = mountButton(actionRoot, {
-    label: "continue in chat",
-    variant: "default",
-    size: "sm",
-    onClick: () => callbacks.action("primary"),
-  });
+  const action = mountPrimaryAction(actionRoot);
   const verifyRoot = document.createElement("span");
   const verify = mountButton(verifyRoot, {
     label: "verify",
@@ -289,8 +287,13 @@ export function mountDetailView(
       refreshMessage.textContent = state.refreshError ?? "";
       refreshIssue.hidden = !state.refreshError;
       retry.update({ disabled: state.loading });
-      action.update({ label: workflowLabel(state.change.stage) });
-      action.update({ disabled: state.unavailable });
+      action.update({
+        id: state.change.id,
+        stage: state.change.stage,
+        disabled: state.unavailable,
+        pending: state.pending,
+        action: state.primaryAction,
+      });
       exploreRoot.hidden = state.change.stage !== "planning";
       explore.update({ disabled: state.unavailable });
       deleteAction.update({ disabled: state.unavailable });

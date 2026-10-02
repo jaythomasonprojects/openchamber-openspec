@@ -2,8 +2,8 @@
 
 An OpenChamber panel and full-page board for the OpenSpec changes in your selected project or
 worktree. Browse planning artefacts and CLI-reported tasks without searching the file tree. Create
-or delete active changes, prepare editable, unsent per-change workflow prompts in your chat, or
-launch confirmed bulk archiving in a new session.
+or delete active changes, prepare workflow drafts in your chat, or run Apply in a new worktree. You
+can also launch confirmed bulk archiving in a new session.
 
 ![OpenSpec board grouping changes by stage, with task progress and workflow actions.](docs/images/board-view.jpg)
 ![OpenSpec change detail showing the selected Specs tab and its specification.](docs/images/change-view.jpg)
@@ -60,14 +60,47 @@ OpenSpec config command instead.
    `https://github.com/jaythomasonprojects/openchamber-openspec.git` into **Folder, ZIP, or URL**
    and select **Add**.
 2. Review its permissions and choose **Allow and enable** if you trust it. Its local service runs
-   `openspec` with your user access. Per-change workflow prompts remain unsent; confirmed **archive
-   all** creates a session and submits a prompt. Updates adding the sessions permission require
-   reapproval.
+   `openspec` with your user access. Current-chat prompts remain unsent. **Run in new worktree** and
+   confirmed **archive all** create sessions and submit prompts. The `sessions` permission covers
+   these host-owned operations. Updates adding the sessions permission require reapproval.
 3. Select the OpenSpec-enabled project in OpenChamber, then open the **OpenSpec** rail panel or find
    it under **Extension pages**. An empty board is expected until you have an active change. Use
    **new change** to create one, or open an existing change to read its artefacts and tasks.
 
 Git installations can check for updates in **Settings > Extensions**.
+
+## Choose where to apply a change
+
+On a Ready or In Progress card, or in its detail view, open **apply**:
+
+- **Prepare in current chat** replaces your composer with an editable, unsent Apply prompt.
+- **Run in new worktree** creates a worktree and branch named after the change, submits the same
+  Apply prompt as the new session's first message, then opens that session.
+
+OpenChamber uses the originating registered project's default base, setup hooks, model, and agent.
+The extension does not run Git or copy planning files. Opening or dismissing the menu does nothing.
+Uncommitted implementation changes do not carry into the new worktree.
+
+If creation or submission fails, inspect the reported worktree or session before another attempt. A
+timeout does not mean that creation was rolled back. Existing resources remain available, and the
+extension never retries automatically or reuses a colliding name. If you switch project or chat
+during creation, the result does not navigate away from your new selection.
+
+## Use shared planning in worktrees
+
+If you want worktrees to share planning, configure your project's OpenChamber setup hook to link
+each worktree's top-level `openspec/` to the main checkout's planning directory. For example, the
+worktree's `openspec` can point to `/path/to/main-checkout/openspec`. Keep the local OpenSpec skills
+available in each worktree. You own this setup: the extension does not create or repair links.
+
+The board reads and creates changes through this link. Task completion and deletion affect shared
+planning, so all linked worktrees see the same progress after **refresh**. Implementation still runs
+in the selected worktree, using the ordinary local Apply skill without an external-planning path.
+
+If the link changes or becomes invalid, refresh to establish the new planning scope. The extension
+rejects old scoped requests, escaped documents and task inputs, and linked changes parents or change
+directories. Deletion preserves the top-level link and external files referenced by nested links.
+Filesystem checks and removal are not atomic.
 
 ## Archive completed changes
 

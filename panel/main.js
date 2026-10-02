@@ -1000,6 +1000,18 @@
       node.setAttribute(name, value);
     }
   };
+  var onOutsideClick = (node, handler) => {
+    const listener = (event) => {
+      if (event.target instanceof Node && node.contains(event.target)) {
+        return;
+      }
+      handler();
+    };
+    document.addEventListener("pointerdown", listener, true);
+    return () => {
+      document.removeEventListener("pointerdown", listener, true);
+    };
+  };
 
   // node_modules/@openchamber/sdk/dist/ui/style.js
   var OC_ALIAS = {
@@ -1418,6 +1430,80 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     return target?.id ?? null;
   };
 
+  // node_modules/@openchamber/sdk/dist/ui/option.js
+  var optionId = (uid, id) => `${uid}-${id ?? ""}`;
+  var createOption = (uid, role, spec, on) => {
+    const node = button("oc-sdk-option");
+    node.id = optionId(uid, spec.id);
+    node.setAttribute("role", role);
+    node.tabIndex = -1;
+    node.disabled = Boolean(spec.disabled);
+    if (role === "option") {
+      node.setAttribute("aria-selected", spec.selected ? "true" : "false");
+    }
+    node.dataset.destructive = spec.destructive ? "true" : "false";
+    const label = el("span", "oc-sdk-option-label");
+    label.textContent = spec.label;
+    node.append(label);
+    if (spec.hint) {
+      const hint = el("span", "oc-sdk-option-hint");
+      hint.textContent = spec.hint;
+      node.append(hint);
+    }
+    node.addEventListener("pointerenter", on.hover);
+    node.addEventListener("click", on.pick);
+    return node;
+  };
+  var highlightOption = (container, focusOwner, uid, id) => {
+    const target = optionId(uid, id);
+    for (const child of Array.from(container.children)) {
+      if (child instanceof HTMLElement && child.classList.contains("oc-sdk-option")) {
+        child.dataset.active = child.id === target ? "true" : "false";
+      }
+    }
+    setAttr(focusOwner, "aria-activedescendant", id ? target : null);
+    container.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/popup.js
+  var placePopup = (popup, trigger) => {
+    const rect = trigger.getBoundingClientRect();
+    popup.style.minWidth = `${Math.round(rect.width)}px`;
+    popup.style.left = `${Math.round(rect.left)}px`;
+    popup.style.top = `${Math.round(rect.bottom + 4)}px`;
+    const height = popup.offsetHeight;
+    const roomBelow = window.innerHeight - rect.bottom - 8;
+    if (height > roomBelow && rect.top - 8 > roomBelow) {
+      popup.style.top = `${Math.max(8, Math.round(rect.top - 4 - height))}px`;
+    }
+    const overflow = rect.left + popup.offsetWidth - window.innerWidth + 8;
+    if (overflow > 0) {
+      popup.style.left = `${Math.max(8, Math.round(rect.left - overflow))}px`;
+    }
+  };
+  var openPopup = (host2, trigger, popup, close) => {
+    host2.append(popup);
+    placePopup(popup, trigger);
+    const stopOutside = onOutsideClick(host2, close);
+    const onResize = () => {
+      close();
+    };
+    const onScroll = (event) => {
+      if (event.target instanceof Node && popup.contains(event.target)) {
+        return;
+      }
+      close();
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      stopOutside();
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
+      popup.remove();
+    };
+  };
+
   // node_modules/@openchamber/sdk/dist/ui/tabs.js
   var mountTabs = (root2, initial) => {
     ensureStyle(UI_CSS);
@@ -1546,6 +1632,112 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     };
   };
 
+  // node_modules/@openchamber/sdk/dist/ui/menu.js
+  var actions = (items) => items.filter((item) => !("separator" in item));
+  var menuCount = 0;
+  var mountMenu = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const uid = `oc-sdk-menu-${menuCount += 1}`;
+    const wrap = el("div", "oc-sdk oc-sdk-menu");
+    root2.append(wrap);
+    const popup = el("div", "oc-sdk oc-sdk-popup");
+    popup.setAttribute("role", "menu");
+    popup.tabIndex = -1;
+    let closePopup = null;
+    let activeId = null;
+    const trigger = mountButton(wrap, {
+      label: props.label,
+      variant: props.variant,
+      size: props.size,
+      onClick: () => {
+        if (closePopup)
+          close();
+        else
+          open();
+      }
+    });
+    const triggerNode = wrap.querySelector("button");
+    triggerNode?.setAttribute("aria-haspopup", "menu");
+    const setActive = (id) => {
+      activeId = id;
+      highlightOption(popup, popup, uid, id);
+    };
+    const paintItems = () => {
+      clearNode(popup);
+      for (const item of props.items) {
+        if ("separator" in item) {
+          const line = el("div", "oc-sdk-separator");
+          line.dataset.labeled = "false";
+          popup.append(line);
+          continue;
+        }
+        popup.append(createOption(uid, "menuitem", item, {
+          hover: () => setActive(item.id),
+          pick: () => pick(item.id)
+        }));
+      }
+      setActive(actions(props.items).some((item) => item.id === activeId) ? activeId : null);
+    };
+    const close = () => {
+      const dispose = closePopup;
+      closePopup = null;
+      dispose?.();
+      activeId = null;
+      triggerNode?.setAttribute("aria-expanded", "false");
+    };
+    const open = () => {
+      if (closePopup || !triggerNode) {
+        return;
+      }
+      paintItems();
+      closePopup = openPopup(wrap, triggerNode, popup, close);
+      triggerNode.setAttribute("aria-expanded", "true");
+      popup.focus();
+    };
+    const pick = (id) => {
+      close();
+      triggerNode?.focus();
+      props.onSelect(id);
+    };
+    const onPopupKey = (event) => {
+      const step = navigationKey(event);
+      if (step) {
+        event.preventDefault();
+        setActive(moveListSelection(actions(props.items), activeId, step));
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (activeId)
+          pick(activeId);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        triggerNode?.focus();
+      }
+    };
+    const onFocusOut = (event) => {
+      if (closePopup && !(event.relatedTarget instanceof Node && wrap.contains(event.relatedTarget)))
+        close();
+    };
+    popup.addEventListener("keydown", onPopupKey);
+    wrap.addEventListener("focusout", onFocusOut);
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        trigger.update({ label: props.label, variant: props.variant, size: props.size });
+        if (closePopup)
+          paintItems();
+      },
+      dispose: () => {
+        close();
+        popup.removeEventListener("keydown", onPopupKey);
+        wrap.removeEventListener("focusout", onFocusOut);
+        trigger.dispose();
+        wrap.remove();
+      }
+    };
+  };
+
   // src/model.ts
   function requiredArtifactIds(change) {
     const byId = new Map(change.artifacts.map((artifact) => [artifact.id, artifact]));
@@ -1581,6 +1773,11 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   }
 
   // src/contracts.ts
+  function decodePlanning(value) {
+    if (typeof value !== "string" || !value.length || value.length > 4096 || value.includes("\0"))
+      throw new Error("Invalid planning identity.");
+    return value;
+  }
   var documentKey = (artifactId, selector) => JSON.stringify([artifactId, selector]);
   function record(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid data.");
@@ -1616,7 +1813,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     const changes = input.changes.map((item) => decodeListingEntry(item));
     if (new Set(changes.map((item) => item.id)).size !== changes.length)
       throw new Error("Duplicate change.");
-    return { directory, root: root2, changes };
+    return { directory, root: root2, planning: decodePlanning(input.planning), changes };
   }
   function decodeArtifacts(value, requires) {
     if (!Array.isArray(value)) throw new Error("Invalid artefacts.");
@@ -1707,7 +1904,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     });
     if (new Set(changes.map((entry) => entry.id)).size !== changes.length)
       throw new Error("Duplicate change.");
-    return { root: root2, changes };
+    return { root: root2, planning: decodePlanning(input.planning), changes };
   }
   function decodeTaskResponse(value) {
     const item = record(value);
@@ -1763,23 +1960,32 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       return value;
     };
     return {
-      list: async (directory, expectedRoot) => {
+      list: async (directory, expectedRoot, expectedPlanning) => {
         const value = await request("/changes", {
           directory,
-          ...expectedRoot ? { expectedRoot } : {}
+          ...expectedRoot ? { expectedRoot } : {},
+          ...expectedPlanning ? { expectedPlanning } : {}
         });
         const listing = decode(value, decodeListing);
         if (listing.directory !== directory || expectedRoot && listing.root !== expectedRoot)
           throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+        if (expectedPlanning && listing.planning !== expectedPlanning)
+          throw new ServiceRequestError("PLANNING_CHANGED", "OpenSpec planning target changed.");
         return listing;
       },
       summaries: async (scope, entries2) => {
         const value = decode(
-          await request("/summaries", { directory: scope.directory, expectedRoot: scope.root }),
+          await request("/summaries", {
+            directory: scope.directory,
+            expectedRoot: scope.root,
+            expectedPlanning: scope.planning
+          }),
           decodeSummaries
         );
         if (value.root !== scope.root)
           throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+        if (value.planning !== scope.planning)
+          throw new ServiceRequestError("PLANNING_CHANGED", "OpenSpec planning target changed.");
         const byId = new Map(value.changes.map((item) => [item.id, item]));
         return entries2.map((entry) => {
           const item = byId.get(entry.id);
@@ -1805,7 +2011,12 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       },
       tasks: async (scope, change) => {
         return decode(
-          await request("/tasks", { ...scope, expectedRoot: scope.root, change }),
+          await request("/tasks", {
+            ...scope,
+            expectedRoot: scope.root,
+            expectedPlanning: scope.planning,
+            change
+          }),
           decodeTaskResponse
         );
       },
@@ -1814,6 +2025,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           await request("/document", {
             ...scope,
             expectedRoot: scope.root,
+            expectedPlanning: scope.planning,
             change,
             artifactId,
             selector
@@ -1827,7 +2039,13 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         let value;
         try {
           value = record2(
-            await request("/create", { ...scope, expectedRoot: scope.root, name, goal })
+            await request("/create", {
+              ...scope,
+              expectedRoot: scope.root,
+              expectedPlanning: scope.planning,
+              name,
+              goal
+            })
           );
         } catch (caught) {
           if (caught instanceof ServiceRequestError && caught.outcome !== "unknown" && caught.code !== "BAD_SERVICE_DATA" && caught.code !== "CLI_TIMEOUT")
@@ -1848,7 +2066,14 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       delete: async (scope, change) => {
         let value;
         try {
-          value = record2(await request("/delete", { ...scope, expectedRoot: scope.root, change }));
+          value = record2(
+            await request("/delete", {
+              ...scope,
+              expectedRoot: scope.root,
+              expectedPlanning: scope.planning,
+              change
+            })
+          );
         } catch (caught) {
           if (caught instanceof ServiceRequestError && caught.outcome !== "unknown" && caught.code !== "BAD_SERVICE_DATA")
             throw caught;
@@ -1876,8 +2101,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     let generation = 0;
     let bytes = 0;
     let disposed = false;
-    const scopeKey = (scope) => JSON.stringify([scope.directory, scope.root]);
-    const keyFor = (scope, change, kind, artifact = "", selector = "") => JSON.stringify([scope.directory, scope.root, change, kind, artifact, selector]);
+    const scopeKey = (scope) => JSON.stringify([scope.directory, scope.root, scope.planning]);
+    const keyFor = (scope, change, kind, artifact = "", selector = "") => JSON.stringify([scope.directory, scope.root, scope.planning, change, kind, artifact, selector]);
     const active2 = (scope) => !disposed && !!context && scopeKey(context) === scopeKey(scope);
     const state = (entry) => ({
       value: entry.value,
@@ -1959,7 +2184,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         );
       },
       invalidateChange(scope, change) {
-        const prefix = JSON.stringify([scope.directory, scope.root, change]).slice(0, -1) + ",";
+        const prefix = JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
         for (const [key, entry] of cache)
           if (key.startsWith(prefix)) {
             bytes -= entry.bytes;
@@ -1982,6 +2207,62 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   ];
   var workflowLabel = (stage) => stages.find((item) => item.id === stage).action;
   var stageLabel = (stage) => stages.find((item) => item.id === stage).label;
+
+  // src/panel/primary-action.ts
+  function mountPrimaryAction(root2) {
+    const buttonRoot = document.createElement("span");
+    const menuRoot = document.createElement("span");
+    root2.append(buttonRoot, menuRoot);
+    let state = null;
+    let opened = null;
+    const button2 = mountButton(buttonRoot, {
+      label: "propose",
+      size: "sm",
+      onClick: () => state?.action("primary")
+    });
+    const menu = mountMenu(menuRoot, {
+      label: "apply",
+      size: "sm",
+      variant: "default",
+      items: [],
+      onSelect: (id) => {
+        const captured = opened;
+        opened = null;
+        if (!captured || captured.disabled || state?.disabled || captured.id !== state?.id || captured.stage !== state?.stage || id === "worktree" && state?.pending)
+          return;
+        captured.action(id === "worktree" ? "worktree" : "primary");
+      }
+    });
+    const trigger = menuRoot.querySelector("button");
+    const capture = () => {
+      if (trigger.getAttribute("aria-expanded") !== "true") opened = state;
+    };
+    trigger.addEventListener("click", capture, true);
+    return {
+      update(next) {
+        state = next;
+        const apply3 = next.stage === "ready" || next.stage === "progress";
+        buttonRoot.hidden = apply3;
+        menuRoot.hidden = !apply3;
+        button2.update({ label: workflowLabel(next.stage), disabled: next.disabled });
+        menu.update({
+          items: [
+            { id: "current", label: "Prepare in current chat", disabled: next.disabled },
+            { id: "worktree", label: "Run in new worktree", disabled: next.disabled || next.pending }
+          ]
+        });
+        trigger.disabled = next.disabled;
+      },
+      dispose() {
+        trigger.removeEventListener("click", capture, true);
+        menu.dispose();
+        button2.dispose();
+        buttonRoot.remove();
+        menuRoot.remove();
+        opened = state = null;
+      }
+    };
+  }
 
   // src/panel/help-button.ts
   function mountHelpButton(root2, onClick) {
@@ -2184,12 +2465,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         const actionRoot = document.createElement("span");
         actionRoot.className = "card-actions";
         const id = item.change.id;
-        const action = mountButton(actionRoot, {
-          label: "propose",
-          variant: "default",
-          size: "sm",
-          onClick: () => cards.get(id)?.current.action("primary")
-        });
+        const action = mountPrimaryAction(actionRoot);
         const exploreRoot = document.createElement("span");
         const explore = mountButton(exploreRoot, {
           label: "explore",
@@ -2240,8 +2516,11 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         label: `${change.completedTasks} of ${change.totalTasks} tasks complete`
       });
       entry.action.update({
-        label: workflowLabel(change.stage),
-        disabled: item.unavailable
+        id: change.id,
+        stage: change.stage,
+        disabled: item.unavailable,
+        pending: item.pending,
+        action: item.action
       });
       entry.explore.update({ disabled: item.unavailable });
       entry.exploreRoot.hidden = change.stage !== "planning";
@@ -6052,12 +6331,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const footer = document.createElement("footer");
     footer.className = "detail-footer";
     const actionRoot = document.createElement("span");
-    const action = mountButton(actionRoot, {
-      label: "continue in chat",
-      variant: "default",
-      size: "sm",
-      onClick: () => callbacks.action("primary")
-    });
+    const action = mountPrimaryAction(actionRoot);
     const verifyRoot = document.createElement("span");
     const verify = mountButton(verifyRoot, {
       label: "verify",
@@ -6153,8 +6427,13 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         refreshMessage.textContent = state.refreshError ?? "";
         refreshIssue.hidden = !state.refreshError;
         retry.update({ disabled: state.loading });
-        action.update({ label: workflowLabel(state.change.stage) });
-        action.update({ disabled: state.unavailable });
+        action.update({
+          id: state.change.id,
+          stage: state.change.stage,
+          disabled: state.unavailable,
+          pending: state.pending,
+          action: state.primaryAction
+        });
         exploreRoot.hidden = state.change.stage !== "planning";
         explore.update({ disabled: state.unavailable });
         deleteAction.update({ disabled: state.unavailable });
@@ -6306,8 +6585,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     });
     const message = document.createElement("p");
     message.setAttribute("role", "status");
-    const actions = document.createElement("div");
-    actions.className = "create-actions";
+    const actions2 = document.createElement("div");
+    actions2.className = "create-actions";
     const cancelRoot = document.createElement("span");
     const submitRoot = document.createElement("span");
     const retryRoot = document.createElement("span");
@@ -6367,8 +6646,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         paint();
       }
     });
-    actions.append(cancelRoot, forgetRoot, retryRoot, inspectRoot, submitRoot);
-    form.append(heading, nameRoot, goalRoot, message, actions);
+    actions2.append(cancelRoot, forgetRoot, retryRoot, inspectRoot, submitRoot);
+    form.append(heading, nameRoot, goalRoot, message, actions2);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       void submitChange();
@@ -6377,7 +6656,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     document.body.append(dialog);
     const sameContext = (scope) => {
       const current = callbacks.current();
-      return current?.directory === scope.directory && current.root === scope.root;
+      return current?.directory === scope.directory && current.root === scope.root && current.planning === scope.planning;
     };
     function discardDraft() {
       draftScope = null;
@@ -6417,7 +6696,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       messageText = "Checking the original project for a matching change\u2026";
       paint();
       try {
-        const listing = await client.list(original.scope.directory, original.scope.root);
+        const listing = await client.list(
+          original.scope.directory,
+          original.scope.root,
+          original.scope.planning
+        );
         if (disposed || currentGeneration !== generation) return;
         if (listing.changes.some((entry) => entry.id === original.name)) {
           mode = "observed-existing";
@@ -6520,8 +6803,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const description = document.createElement("p");
     const message = document.createElement("p");
     message.setAttribute("role", "status");
-    const actions = document.createElement("div");
-    actions.className = "delete-actions";
+    const actions2 = document.createElement("div");
+    actions2.className = "delete-actions";
     const cancelRoot = document.createElement("span");
     const retryRoot = document.createElement("span");
     const deleteRoot = document.createElement("span");
@@ -6529,7 +6812,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     let mode = "confirming";
     let disposed = false;
     const unresolved = /* @__PURE__ */ new Set();
-    const key = (attempt) => JSON.stringify([attempt.scope.directory, attempt.scope.root, attempt.name]);
+    const key = (attempt) => JSON.stringify([
+      attempt.scope.directory,
+      attempt.scope.root,
+      attempt.scope.planning,
+      attempt.name
+    ]);
     const matches = (attempt) => {
       const current = callbacks.current();
       return current?.scope === attempt.scope && current.epoch === attempt.epoch && current.selection === attempt.selection && current.name === attempt.name;
@@ -6565,8 +6853,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       }
     });
     addButtonIcon(deleteRoot, "delete");
-    actions.append(cancelRoot, retryRoot, deleteRoot);
-    dialog.append(heading, description, message, actions);
+    actions2.append(cancelRoot, retryRoot, deleteRoot);
+    dialog.append(heading, description, message, actions2);
     root2.append(dialog);
     function display() {
       message.hidden = !message.textContent;
@@ -6596,7 +6884,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         display();
       }
       try {
-        const listing = await client.list(attempt.scope.directory, attempt.scope.root);
+        const listing = await client.list(
+          attempt.scope.directory,
+          attempt.scope.root,
+          attempt.scope.planning
+        );
         if (disposed || !matches(attempt) || target !== attempt) return;
         unresolved.delete(key(attempt));
         if (!listing.changes.some((item) => item.id === attempt.name)) {
@@ -6679,8 +6971,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     description.id = "archive-all-description";
     description.textContent = "This creates a new session and sends a prompt to archive completed changes in this project. Unfinished changes will be skipped. The board stays open; use refresh to see updates.";
     dialog.setAttribute("aria-describedby", description.id);
-    const actions = document.createElement("div");
-    actions.className = "archive-actions";
+    const actions2 = document.createElement("div");
+    actions2.className = "archive-actions";
     const cancelRoot = document.createElement("span");
     const startRoot = document.createElement("span");
     let origin = null;
@@ -6710,8 +7002,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
       event.preventDefault();
       close();
     });
-    actions.append(cancelRoot, startRoot);
-    dialog.append(heading, description, actions);
+    actions2.append(cancelRoot, startRoot);
+    dialog.append(heading, description, actions2);
     root2.append(dialog);
     return {
       open() {
@@ -6741,6 +7033,87 @@ Run openspec list --json for a fresh active-change listing and resolve its OpenS
 Process qualifying changes sequentially using the openspec-archive-change skill for each named change. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
 
 Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`;
+
+  // src/panel/worktree.ts
+  async function ready(read, subscribe) {
+    const initial = await read();
+    if (initial.state === "ready") return initial;
+    if (initial.state === "error")
+      throw new Error(
+        "Host workspace inspection failed. Inspect worktrees and sessions before trying again."
+      );
+    let off;
+    let settled = false;
+    let timer;
+    try {
+      return await new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          settled = true;
+          reject(new Error("Host workspace inspection timed out. No creation was requested."));
+        }, 2e4);
+        void subscribe((value) => {
+          if (value.state === "loading") return;
+          settled = true;
+          if (value.state === "ready") resolve(value);
+          else reject(new Error("Host workspace inspection failed."));
+        }).then((unsubscribe) => {
+          off = unsubscribe;
+          if (settled) off();
+        }, reject);
+      });
+    } finally {
+      settled = true;
+      clearTimeout(timer);
+      off?.();
+    }
+  }
+  async function inspectWorktreeDestination(host2, directory, name) {
+    const projects = await ready(
+      () => host2.listProjects(),
+      (listener) => host2.onProjects(listener)
+    );
+    const owners = projects.projects.filter((project2) => project2.directory === directory);
+    if (!owners.length) {
+      const mappings = await Promise.all(
+        projects.projects.map(async (project2) => ({
+          project: project2,
+          trees: await ready(
+            () => host2.listWorktrees(project2.id),
+            (listener) => host2.onWorktrees(project2.id, listener)
+          )
+        }))
+      );
+      owners.push(
+        ...mappings.filter(({ trees: trees2 }) => trees2.worktrees.some((tree) => tree.directory === directory)).map(({ project: project2 }) => project2)
+      );
+    }
+    if (owners.length !== 1)
+      throw new Error(
+        "Cannot identify the originating registered project. No worktree was requested."
+      );
+    const project = owners[0];
+    const [trees, sessions] = await Promise.all([
+      ready(
+        () => host2.listWorktrees(project.id),
+        (listener) => host2.onWorktrees(project.id, listener)
+      ),
+      ready(
+        () => host2.listSessions(project.id),
+        (listener) => host2.onSessions(project.id, listener)
+      )
+    ]);
+    if (sessions.coverage.some((item) => item.state !== "ready"))
+      throw new Error("Session inspection is incomplete. Inspect the project before trying again.");
+    const collision = trees.worktrees.find((tree) => tree.name === name || tree.branch === name);
+    const session = sessions.sessions.find(
+      (session2) => session2.worktree?.name === name || session2.items.some((item) => item.id === name)
+    );
+    if (collision || session)
+      throw new Error(
+        `Worktree or session for ${name} already exists${collision ? ` at ${collision.directory}` : ` (session ${session.id})`}. Inspect it instead of creating another worktree.`
+      );
+    return project;
+  }
 
   // src/panel/controller.ts
   function mountController(host2, appRoot) {
@@ -6776,6 +7149,8 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
     let readGeneration = 0;
     let boardScroll = 0;
     let archivePending = false;
+    const worktreePending = /* @__PURE__ */ new Set();
+    const worktreeKey = (scope2, id) => JSON.stringify([scope2.directory, scope2.root, scope2.planning, id]);
     let disposed = false;
     function invalidate() {
       epoch++;
@@ -6800,6 +7175,13 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       readGeneration++;
       search = "";
       errorMessage = null;
+      render();
+    }
+    function planningChanged() {
+      const retainedSearch = search;
+      invalidate();
+      search = retainedSearch;
+      errorMessage = "Planning target changed. Refresh to establish the new scope.";
       render();
     }
     function loadBoard(refresh = false, reconcile = false) {
@@ -6835,7 +7217,7 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
             loadBoard();
             return;
           }
-          scope = scope?.root === listing.root ? scope : { directory: currentDirectory, root: listing.root };
+          scope = scope?.root === listing.root && scope.planning === listing.planning ? scope : { directory: currentDirectory, root: listing.root, planning: listing.planning };
           const current = scope;
           resources.setContext(current);
           const listed = new Set(listing.changes.map((entry) => entry.id));
@@ -6900,6 +7282,10 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
             } catch (caught) {
               if (epoch !== startingEpoch || scope !== current || operation !== boardOperation)
                 return;
+              if (caught instanceof ServiceRequestError && caught.code === "PLANNING_CHANGED") {
+                planningChanged();
+                return;
+              }
               if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
                 invalidate();
                 loadBoard();
@@ -6924,6 +7310,10 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
         } catch (caught) {
           if (directory !== currentDirectory || epoch !== startingEpoch || operation !== boardOperation)
             return;
+          if (caught instanceof ServiceRequestError && caught.code === "PLANNING_CHANGED") {
+            planningChanged();
+            return;
+          }
           if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
             invalidate();
             loadBoard();
@@ -6967,10 +7357,15 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       if (intent === "verify") return `/openspec-verify-change ${change.id}`;
       return `/openspec-archive-change ${change.id}`;
     }
-    async function preparePrompt(change, captured, originatingEpoch, intent) {
+    async function preparePrompt(change, captured, originatingEpoch, intent, originatingSession = sessionId) {
       const current = changes.find((item) => item.id === change.id);
-      if (!captured || scope !== captured || epoch !== originatingEpoch || unavailableIds.has(change.id) || !current || intent === "verify" && current.stage !== "complete" || intent === "explore" && current.stage !== "planning" || intent === "primary" && current.stage !== change.stage)
+      if (!captured || scope !== captured || epoch !== originatingEpoch || sessionId !== originatingSession || unavailableIds.has(change.id) || !current || intent === "verify" && current.stage !== "complete" || intent === "explore" && current.stage !== "planning" || (intent === "primary" || intent === "worktree") && current.stage !== change.stage)
         return;
+      if (intent === "worktree") {
+        if (current.stage !== "ready" && current.stage !== "progress") return;
+        await runInWorktree(change, captured, originatingEpoch);
+        return;
+      }
       const expectedSession = sessionId;
       try {
         await host2.compose({ text: actionPrompt(change, intent), mode: "replace" });
@@ -6987,8 +7382,76 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         });
       }
     }
+    async function runInWorktree(change, captured, originatingEpoch) {
+      const key = worktreeKey(captured, change.id);
+      if (worktreePending.has(key)) return;
+      const expectedSession = sessionId;
+      const current = () => !disposed && scope === captured && epoch === originatingEpoch && sessionId === expectedSession && !unavailableIds.has(change.id) && changes.some((item) => item.id === change.id && item.stage === change.stage);
+      worktreePending.add(key);
+      render();
+      let dispatched = false;
+      let knownSession = null;
+      try {
+        const project = await inspectWorktreeDestination(host2, captured.directory, change.id);
+        if (!current()) return;
+        const listing = await client.list(captured.directory, captured.root, captured.planning);
+        if (!current()) return;
+        const listed = listing.changes.find((item) => item.id === change.id);
+        if (!listed || listed.totalTasks > 0 && listed.completedTasks === listed.totalTasks)
+          throw new Error("This change is no longer applicable. Refresh before starting Apply.");
+        dispatched = true;
+        const result = await host2.startSession({
+          providerId: "openspec-board",
+          id: change.id,
+          title: `Apply ${change.id}`,
+          url: "https://openspec.dev/docs/quickstart",
+          projectId: project.id,
+          worktree: { kind: "new", name: change.id },
+          navigation: "preserve",
+          text: actionPrompt(change, "primary")
+        });
+        knownSession = result.sessionId;
+        if (!current()) return;
+        const resource = result.worktree ? ` Worktree ${result.worktree.name} at ${result.worktree.directory} is retained.` : "";
+        if (!result.sessionId || result.sent !== "sent") {
+          await host2.toast({
+            kind: "error",
+            persistent: true,
+            message: result.sessionId ? `Session ${result.sessionId} exists, but Apply submission was not confirmed (${result.sent}).${resource} Inspect it before another attempt.` : `Apply creation failed (${"failure" in result ? result.failure : "unknown"}).${resource} Inspect worktrees and sessions before another attempt.`
+          });
+          return;
+        }
+        if (!result.directory || !result.worktree || result.worktree.name !== change.id || result.worktree.directory !== result.directory) {
+          await host2.toast({
+            kind: "error",
+            persistent: true,
+            message: `Session ${result.sessionId} was returned with an unexpected worktree result.${resource} Inspect it before another attempt.`
+          });
+          return;
+        }
+        await host2.toast({
+          kind: result.linked === false ? "info" : "success",
+          message: `Apply submitted in session ${result.sessionId}.${result.linked === false ? " Its workflow reference could not be saved." : ""}`
+        });
+        if (current()) await host2.openSession(result.sessionId);
+      } catch (caught) {
+        if (!current()) return;
+        await host2.toast({
+          kind: "error",
+          persistent: dispatched,
+          message: knownSession ? `Apply session ${knownSession} exists, but it could not be opened. Inspect that session; submission will not be repeated.` : dispatched ? `Apply launch outcome is uncertain. A worktree, session or sent prompt may already exist. Inspect worktrees and sessions before another attempt; this launch will not be retried automatically. ${caught instanceof Error ? caught.message : ""}` : caught instanceof Error ? caught.message : "Worktree inspection failed. No creation was requested."
+        });
+      } finally {
+        worktreePending.delete(key);
+        if (!disposed) render();
+      }
+    }
     function applyContentError(state, captured, change) {
       if (!(state?.error instanceof ServiceRequestError)) return false;
+      if (state.error.code === "PLANNING_CHANGED") {
+        planningChanged();
+        return true;
+      }
       if (state.error.code === "ROOT_CHANGED") {
         invalidate();
         loadBoard();
@@ -7113,11 +7576,12 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
     const createView = mountCreateDialog(client, {
       current: () => scope,
       created: (origin) => {
-        if (scope?.directory === origin.directory && scope.root === origin.root)
+        if (scope?.directory === origin.directory && scope.root === origin.root && scope.planning === origin.planning)
           loadBoard(true, true);
       },
       inspect: (origin, name) => {
-        if (scope?.directory !== origin.directory || scope.root !== origin.root) return;
+        if (scope?.directory !== origin.directory || scope.root !== origin.root || scope.planning !== origin.planning)
+          return;
         pendingInspection = { scope, epoch, name, minOperation: boardOperation + 1 };
         loadBoard(true, true);
       }
@@ -7290,6 +7754,8 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       }
     });
     function render() {
+      const originatingSession = sessionId;
+      const detailChange = selectedChange;
       createView.update();
       deleteView.update();
       archiveView.update();
@@ -7313,17 +7779,13 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
           change,
           stale: staleIds.has(change.id),
           unavailable: unavailableIds.has(change.id),
+          pending: !!captured && worktreePending.has(worktreeKey(captured, change.id)),
           open: () => openDetail(
             changes.find((item) => item.id === change.id) ?? change,
             captured,
             originatingEpoch
           ),
-          action: (intent) => void preparePrompt(
-            changes.find((item) => item.id === change.id) ?? change,
-            captured,
-            originatingEpoch,
-            intent
-          )
+          action: (intent) => void preparePrompt(change, captured, originatingEpoch, intent, originatingSession)
         }))
       });
       boardView.setVisible(!selectedChange);
@@ -7335,15 +7797,26 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
           files,
           tasks: taskState,
           unavailable: unavailableIds.has(selectedChange.id),
+          pending: !!captured && worktreePending.has(worktreeKey(captured, selectedChange.id)),
           loading,
-          refreshError: errorMessage ?? failures.find((item) => item.id === selectedChange?.id)?.error ?? null
+          refreshError: errorMessage ?? failures.find((item) => item.id === selectedChange?.id)?.error ?? null,
+          primaryAction: (intent) => {
+            if (detailChange)
+              void preparePrompt(
+                detailChange,
+                captured,
+                originatingEpoch,
+                intent,
+                originatingSession
+              );
+          }
         } : null
       );
     }
-    const offReady = host2.onReady((ready) => {
-      const changed = directory !== ready.directory;
-      directory = ready.directory;
-      sessionId = ready.session?.id ?? null;
+    const offReady = host2.onReady((ready2) => {
+      const changed = directory !== ready2.directory;
+      directory = ready2.directory;
+      sessionId = ready2.session?.id ?? null;
       if (changed) {
         invalidate();
         loadBoard();
@@ -7357,6 +7830,7 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
     });
     const offSession = host2.onSession((nextSession) => {
       sessionId = nextSession?.id ?? null;
+      render();
     });
     return () => {
       disposed = true;
@@ -7380,8 +7854,8 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
   var root = document.querySelector("#root");
   if (!root) throw new Error("Panel root is missing");
   var host = connectHost();
-  var offTheme = host.onReady((ready) => {
-    applyHostReady(ready, document.documentElement);
+  var offTheme = host.onReady((ready2) => {
+    applyHostReady(ready2, document.documentElement);
     document.documentElement.classList.add("oc-themed");
     root.style.visibility = "visible";
   });
