@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 # Repository-relative paths shared with the main checkout.
-SHARED_PATHS: list[Path] = [Path("node_modules")]
+SHARED_PATHS: list[Path] = [Path("node_modules"), Path("openspec")]
 
 
 def git(root: Path, *args: str) -> str:
