@@ -10,3 +10,6 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Repository-specific
+!openspec

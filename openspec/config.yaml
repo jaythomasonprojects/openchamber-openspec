@@ -1,0 +1,53 @@
+schema: spec-driven
+
+context: |
+  Consumers: people who install this public extension from GitHub. A new
+  manifest capability makes every user re-approve permissions; a changed CLI
+  call or prompt skill name can break users on other OpenSpec versions. Only
+  this repository's two bundles use the private panel–service protocol, so
+  change it freely.
+  Surface potential breakages for these consumers, and any risk mitigation that
+  adds code or tests, and let the user choose which to handle. Add handling only
+  for what the user chooses.
+  Scope: one person's OpenChamber, desktop or web, in Chromium, Firefox and
+  WebKit.
+  CLI compatibility is best effort: when a change relies on an OpenSpec CLI
+  command, flag or output field that older CLI versions lack, the proposal
+  names it and offers documenting the requirement or one small fallback.
+  Fail fast: unexpected CLI or service output is an error on the affected change
+  or request, never defaulted or partly rendered. Decode only the fields the
+  panel uses; artefact validity is openspec validate's job.
+  Test seams: extend the existing test file for the layer. Panel and host
+  behaviour goes through the fake SDK host, extended for each new SDK call; the
+  real CLI is for new CLI output only. Ask before adding a test file or helper.
+  While planning, agree a change's test seams with the user, using the tdd skill.
+  Plan tests only at agreed seams.
+  Before settling an approach, check it with the simple skill.
+  Write planning artifacts with the writing-for-agents skill.
+  Before planning host interaction, read the SDK docs in
+  node_modules/@openchamber/sdk/.
+  The OpenChamber host and SDK, the OpenSpec CLI and the generated skills in
+  .opencode/ are upstream; when a change works around one, design.md names the
+  upstream cause.
+
+rules:
+  specs:
+    - |
+      Pin values the user chose, such as sizes, opacity and labels. Name private
+      routes and fields only in design.md.
+  tasks:
+    - |
+      Plan tests as vertical slices. Each task that adds a test names its seam
+      and the behaviour it pins, and implements that behaviour.
+
+operations:
+  apply:
+    guidance:
+      - |
+        Follow the tdd loop for the tests the tasks name. Pause and ask before
+        testing at any other seam.
+      - |
+        Run each task's verification before marking it complete. Finish the
+        change with npm run check in all three browsers, plus the live-host
+        check in AGENTS.md when it changes what the user sees or how the panel
+        uses the host. Report commands, results and anything not verified.

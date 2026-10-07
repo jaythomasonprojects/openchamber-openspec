@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-02
+goal: User may want to review or edit a ready change. We need to add a button
+  for that that calls the skill, and asks the user what they would to update
+  about the plan, or look into?

@@ -1,1 +1,1 @@
-@import "AGENTS.md"
+@AGENTS.md

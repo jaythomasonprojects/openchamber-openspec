@@ -15,15 +15,18 @@
 - Browser tests use a fake SDK host for deterministic races. Service and integration tests also
   invoke the real CLI against disposable OpenSpec roots, not an installed extension or live project.
 - VS Code's **Setup: worktree** runs `uv run --no-project scripts/setup_worktree.py` (Python 3.12+).
-  It shares only `node_modules` from the main checkout and refuses existing destinations or tracked
-  paths. Installs affect every linked worktree; keep separate dependencies when branches differ.
+  It links `node_modules` and `openspec` from the main checkout, refusing conflicting destinations
+  or tracked paths. `openspec/` is untracked; worktrees reach shared planning through this symlink.
+  Installs affect every linked worktree; keep separate dependencies when branches differ.
 
 ## Runtime boundaries
 
 - `src/panel.ts` applies the SDK theme before showing the panel. `src/panel/client.ts` uses the SDK
   service bridge, never direct CLI execution or browser HTTP. `src/panel/controller.ts` owns
-  context, selection, read scheduling, and unsent workflow actions; `src/panel/resources.ts` retains
-  scoped reads.
+  context, selection, read scheduling, and workflow actions; `src/panel/resources.ts` retains reads
+  scoped by directory/root/planning target/change.
+- Current-chat workflow actions prepare unsent drafts. **Run in new worktree** and confirmed
+  **archive all** create sessions and submit their prompts through the SDK.
 - Views own mounted DOM and SDK UI handles. Dispose their handles; theme changes and ordinary
   refreshes must not replace the search or detail shells and lose focus, caret, or scroll position.
 - `src/contracts.ts` validates the private protocol; `src/model.ts` derives stages. `src/service.ts`
@@ -34,24 +37,25 @@
   latter keeps generated `service/main.js` CommonJS inside this ESM repository.
 - `panel/main.js` and `service/main.js` are generated installable bundles (ES2022 browser IIFE and
   Node 22 CJS). Build both after private-protocol changes. Installation does not build them. To
-  activate changes, reinstall/update the extension and disable/re-enable it; reloading the iframe
-  does not restart its service. `npm run clean` removes only these two bundles, not `build/`.
+  activate changes, reinstall/update the extension and restart its service as below. `npm run clean`
+  removes only these two bundles, not `build/`.
 
 ## Behaviour constraints
 
-- Load the board on initial/context loads and explicit Refresh. Do not add polling, visibility
-  revalidation, TTL, or board-wide document prefetch.
-- Board loads use one `list` and one `status --all` invocation through `/changes` and `/summaries`.
-  Successful detail reads use one invocation for Tasks and one per document (1 + D total). Verify
-  read roots from each command's output; keep mutation context checks unchanged.
-- Opening detail starts CLI Tasks beside the first document group. Standard groups load Proposal,
-  all Specs concurrently, then Design; custom groups follow declared order. Tab selection must not
-  initiate requests.
-- Retain successful reads by directory/root/change until Refresh, context replacement, or disposal.
-  The session budget is 4 MiB; report capacity errors rather than evicting reads.
-- CLI listing counts and CLI task descriptions/done flags are authoritative. Tasks displays only CLI
-  first-line descriptions; do not parse task sources. Keep workflow prompts unsent.
+- Load the board only on initial/context loads, explicit Refresh, and after the panel's own create
+  or delete. Do not add polling, visibility revalidation, TTL, or board-wide document prefetch.
 - Retained reads do not authorise writes or recovery. Reconcile uncertain writes with a fresh
   listing in the original context; do not retry the mutation automatically.
 - Deletion checks the active parent and target after its final CLI context check. These checks and
   removal are not atomic; do not claim protection against every filesystem race.
+
+## Live-host checks
+
+- After `npm run build`, use the OpenChamber browser tool in **Settings > Extensions** to
+  **Disable** then **Enable** the OpenSpec extension; confirm it is **Enabled**. Reloading the
+  iframe does not restart the service.
+- Check behaviour inside the extension with Playwright in its own browser:
+  `uv run --with playwright python <script>` against the running OpenChamber web UI
+  (`http://127.0.0.1:57123` on this machine). The OpenChamber browser tool cannot see inside the
+  extension iframe.
+- Ask the user before a check creates real sessions or worktrees.

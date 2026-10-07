@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-07
+goal: Run the browser test suites in Chromium, Firefox and WebKit (Chromium per
+  task, all three once per change), and remove the CLI process-count assertions,
+  which the change-loading spec no longer requires.
