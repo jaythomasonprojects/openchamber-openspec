@@ -1,129 +1,45 @@
 # OpenSpec for OpenChamber
 
-An OpenChamber panel and full-page board for the OpenSpec changes in your selected project or
-worktree. Browse planning artefacts and CLI-reported tasks without searching the file tree. Create
-or delete active changes, prepare workflow drafts in your chat, or run Apply in a new worktree. You
-can also launch confirmed bulk archiving in a new session.
+A kanban board for the OpenSpec changes in your OpenChamber project or worktree. See each change's
+stage, artefacts and task progress in one place, create or delete changes, and kick start the next
+workflow step.
 
 ![OpenSpec board grouping changes by stage, with task progress and workflow actions.](docs/images/board-view.jpg)
 ![OpenSpec change detail showing the selected Specs tab and its specification.](docs/images/change-view.jpg)
 
-## Scope
+This extension is simply another way to use OpenSpec, without adding planning features or
+conventions of its own. OpenSpec's own CLI and skills remain the core.
 
-This is a lightweight GUI for OpenSpec, not a separate planning system. OpenSpec's CLI remains the
-source of truth for changes, artefacts and task progress. Contributions that make its information
-easier to view or keep this extension up to date with OpenSpec are welcome.
+Contributions that keep this extension in step with OpenSpec or take advantage of it's additional
+features are welcome.
 
-## Before you start
+## Get started
 
-- Install the [OpenSpec CLI](https://openspec.dev/docs/installation) on the OpenChamber server, with
-  `openspec` on its `PATH`. Use a version that supports `status --all --json` (tested with 1.13.1).
-- Select the project you want to use and initialise OpenSpec.
+1. Install the [OpenSpec CLI](https://openspec.dev/docs/installation) on the OpenChamber server
+   (tested with 1.13.1).
+2. Run `openspec config profile`. Keep the core workflows, add **verify**, and choose skills
+   delivery.
+3. In your project, run `openspec init --tools opencode`.
+4. In OpenChamber, open **Settings > Extensions** and add
+   `https://github.com/jaythomasonprojects/openchamber-openspec.git`. Its service runs `openspec`
+   with your user access, and the `sessions` permission lets it start sessions for worktree Apply
+   and bulk archiving. If you trust that, choose **Allow and enable**.
+5. Open the **OpenSpec** rail panel, or find it under **Extension pages**.
 
-For faster loads, you can turn off OpenSpec usage telemetry on the OpenChamber server:
+The board's help button opens the OpenSpec quickstart. For ~ x2 faster loads, run
+`openspec config set telemetry.enabled false`, since telemetry can slow down every CLI call.
 
-```sh
-openspec config set telemetry.enabled false
-```
+## Planning across worktrees
 
-Telemetry can add a wait to each CLI command. The extension does not change your telemetry setting.
-Environment variables set for the OpenChamber launcher do not reach the extension's service; use the
-OpenSpec config command instead.
+Commit your `openspec/` directory and worktrees pick up changes through Git like any other file.
+**Run in new worktree** starts from your project's default base, so commit the change there first.
 
-## Get your project ready
+Optionally, to share uncommitted planning between worktrees, use your project's setup hook to link
+each worktree's `openspec/` to the main checkout's. The board follows the link but does not create
+or repair it.
 
-1. If needed, install the CLI on the OpenChamber server:
+## Develop
 
-   ```sh
-   npm install -g @fission-ai/openspec@latest
-   openspec --version
-   ```
-
-2. Run `openspec config profile`. Keep the core workflows and add **verify**, which this board uses
-   but OpenSpec does not install by default. Choose skills delivery (or both skills and commands).
-   This profile is a machine-wide OpenSpec setting.
-3. Initialise OpenSpec for OpenCode in the project you want on the board:
-
-   ```sh
-   cd /path/to/your-project
-   openspec init --tools opencode
-   openspec list --json
-   ```
-
-   The listing should report your project's root, even with no changes yet. If you change the
-   profile later, run `openspec update` in each existing project. Restart OpenCode if its skills are
-   not visible.
-
-## Install the extension
-
-1. In OpenChamber, open **Settings > Extensions**. Paste
-   `https://github.com/jaythomasonprojects/openchamber-openspec.git` into **Folder, ZIP, or URL**
-   and select **Add**.
-2. Review its permissions and choose **Allow and enable** if you trust it. Its local service runs
-   `openspec` with your user access. Current-chat prompts remain unsent. **Run in new worktree** and
-   confirmed **archive all** create sessions and submit prompts. The `sessions` permission covers
-   these host-owned operations. Updates adding the sessions permission require reapproval.
-3. Select the OpenSpec-enabled project in OpenChamber, then open the **OpenSpec** rail panel or find
-   it under **Extension pages**. An empty board is expected until you have an active change. Use
-   **new change** to create one, or open an existing change to read its artefacts and tasks.
-
-Git installations can check for updates in **Settings > Extensions**.
-
-## Choose where to apply a change
-
-On a Ready or In Progress card, or in its detail view, open **apply**:
-
-- **Prepare in current chat** replaces your composer with an editable, unsent Apply prompt.
-- **Run in new worktree** creates a worktree and branch named after the change, submits the same
-  Apply prompt as the new session's first message, then opens that session.
-
-OpenChamber uses the originating registered project's default base, setup hooks, model, and agent.
-The extension does not run Git or copy planning files. Opening or dismissing the menu does nothing.
-Uncommitted implementation changes do not carry into the new worktree.
-
-If creation or submission fails, inspect the reported worktree or session before another attempt. A
-timeout does not mean that creation was rolled back. Existing resources remain available, and the
-extension never retries automatically or reuses a colliding name. If you switch project or chat
-during creation, the result does not navigate away from your new selection.
-
-## Use shared planning in worktrees
-
-If you want worktrees to share planning, configure your project's OpenChamber setup hook to link
-each worktree's top-level `openspec/` to the main checkout's planning directory. For example, the
-worktree's `openspec` can point to `/path/to/main-checkout/openspec`. Keep the local OpenSpec skills
-available in each worktree. You own this setup: the extension does not create or repair links.
-
-The board reads and creates changes through this link. Task completion and deletion affect shared
-planning, so all linked worktrees see the same progress after **refresh**. Implementation still runs
-in the selected worktree, using the ordinary local Apply skill without an external-planning path.
-
-If the link changes or becomes invalid, refresh to establish the new planning scope. The extension
-rejects old scoped requests, escaped documents and task inputs, and linked changes parents or change
-directories. Deletion preserves the top-level link and external files referenced by nested links.
-Filesystem checks and removal are not atomic.
-
-## Archive completed changes
-
-Choose **archive all** beside **new change**, then confirm with **start archiving**. **cancel** or
-Escape dismisses the dialogue without creating a session. The secondary button is available when the
-loaded board has a Complete change; search does not narrow the operation.
-
-The new session uses your selected project or worktree and the host's current model and agent
-settings. The agent checks fresh CLI state, skips unfinished and zero-task changes, and archives
-completed changes sequentially through the archive skill. It can ask spec-sync questions or report
-blockers; the button does not approve those choices or guarantee unattended completion.
-
-The board and your current draft stay open. Follow the new session in the session list and use
-**refresh** to see updates. If creation or submission fails, inspect the reported session (or check
-the session list after an uncertain outcome) before starting again. The extension never retries
-automatically. Existing per-change **archive** continues to prepare an editable, unsent draft.
-
-## Develop locally
-
-Use Node 22.13+, npm and the OpenSpec CLI. Run `npm ci`, `npx playwright install chromium`, then
-`npm run check` to lint, check formatting and types, test, and build both installable bundles.
-OpenChamber does not build extensions when it installs them.
-
-For local changes, install this folder in **Settings > Extensions**. Rebuild and reinstall after
-updates; disable and re-enable the extension to restart its service. A panel reload does not restart
-the service.
+Requires Node 22.13+, npm and the OpenSpec CLI. Run `npm ci`, `npx playwright install chromium`,
+then `npm run check`. OpenChamber does not build extensions on install, so rebuild, then disable and
+re-enable the extension to restart its service. More detail is in `AGENTS.md`.
