@@ -546,8 +546,8 @@
         text-align: left;
       }
       dialog::backdrop {
-        background: black;
-        opacity: 0.35;
+        -webkit-backdrop-filter: blur(4px);
+        backdrop-filter: blur(4px);
       }
       dialog:not(.detail) {
         width: min(440px, calc(100vw - 32px));

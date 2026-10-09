@@ -276,11 +276,15 @@ for (const shared of [false, true])
         assert.equal(await completedCard.locator(".affected-areas").isVisible(), false);
         await completedCard.getByRole("button", { name: "archive" }).click();
         await page.waitForFunction(() =>
-          window.__compose?.text?.startsWith("/openspec-archive-change "),
+          window.__compose?.text?.startsWith(
+            "Use your skill tool to load and invoke the openspec-archive-change skill for ",
+          ),
         );
         await completedCard.getByRole("button", { name: "verify" }).click();
         await page.waitForFunction(() =>
-          window.__compose?.text?.startsWith("/openspec-verify-change "),
+          window.__compose?.text?.startsWith(
+            "Use your skill tool to load and invoke the openspec-verify-change skill for ",
+          ),
         );
         assert.deepEqual(await page.evaluate(() => window.__compositions.map(({ mode }) => mode)), [
           "replace",
@@ -306,7 +310,7 @@ for (const shared of [false, true])
         assert.equal(await page.evaluate(() => window.__compose.mode), "replace");
         assert.match(
           await page.evaluate(() => window.__compose.text),
-          /^\/openspec-propose created-in-fixture \(existing change\)\nGoal: Fixture creation goal\n\nInspect/,
+          /^Use your skill tool to load and invoke the openspec-propose skill for OpenSpec change "created-in-fixture" \(existing change\)\.\nGoal: Fixture creation goal\n\nInspect/,
         );
         await panelFrame.getByRole("button", { name: "created-in-fixture" }).click();
         await panelFrame

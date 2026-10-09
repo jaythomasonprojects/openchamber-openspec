@@ -7030,7 +7030,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 
 Run openspec list --json for a fresh active-change listing and resolve its OpenSpec planning context, honouring declared stores and the selected CLI root. Inspect each change with openspec status --change "<name>" --json and current CLI-reported task counts. Only changes with every applicable planning artefact done or explicitly skipped, a positive task total, and all tasks complete qualify. Skip unfinished, zero-task, unavailable or unreadable changes. Never use an incomplete-work warning override or infer successful verification from a Complete card or task counts.
 
-Process qualifying changes sequentially using the openspec-archive-change skill for each named change. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
+Use your skill tool to load and invoke the openspec-archive-change skill for each qualifying named change sequentially. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
 
 Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`;
 
@@ -7340,22 +7340,23 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       const goal = change.goal?.trim() ? `
 Goal: ${change.goal}` : "";
       if (intent === "explore")
-        return `/openspec-explore ${change.id}${goal}
+        return `Use your skill tool to load and invoke the openspec-explore skill for ${target}.${goal}
 
 Investigate the goal, relevant code, options and trade-offs for ${target}. Discuss findings without file changes or implementation. If no goal is recorded, inspect existing context and ask the user to clarify it if necessary; do not invent a goal.`;
       if (change.stage === "planning")
-        return `/openspec-propose ${change.id} (existing change)${goal}
+        return `Use your skill tool to load and invoke the openspec-propose skill for ${target} (existing change).${goal}
 
 Inspect ${target}'s status and current metadata. Preserve existing decisions and any recorded goal; only if current metadata has no goal, establish and record a concise goal from existing change context. Ask the user for clarification if the goal is unclear. Finish planning this existing scaffold and complete missing planning artefacts using OpenSpec's artefact instructions. Do not create another change or implement code. If the skill requires new-change creation, explain the conflict rather than creating another change.`;
       if (change.stage === "ready" || change.stage === "progress") {
         const progress = change.stage === "progress" ? `
 ${change.completedTasks} of ${change.totalTasks} tasks complete. Pick up where implementation left off and complete the remaining tasks.` : "";
-        return `/openspec-apply-change ${change.id}${progress}
+        return `Use your skill tool to load and invoke the openspec-apply-change skill for ${target}.${progress}
 
 Complete all remaining tasks in ${target}, then verify the implementation against its change artefacts. Resolve any issues found and verify again until all tasks are complete and verification passes. If blocked, report the blocker rather than marking unfinished work complete.`;
       }
-      if (intent === "verify") return `/openspec-verify-change ${change.id}`;
-      return `/openspec-archive-change ${change.id}`;
+      if (intent === "verify")
+        return `Use your skill tool to load and invoke the openspec-verify-change skill for ${target}.`;
+      return `Use your skill tool to load and invoke the openspec-archive-change skill for ${target}.`;
     }
     async function preparePrompt(change, captured, originatingEpoch, intent, originatingSession = sessionId) {
       const current = changes.find((item) => item.id === change.id);

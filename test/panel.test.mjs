@@ -440,6 +440,16 @@ test("presentation modal backdrops dim every dialog without changing keyboard ca
         await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
         await page.evaluate((mode) => __theme(mode), mode);
         await panel.locator(`html[data-oc-theme="${mode}"]`).waitFor();
+        const nativeBackdrop = await page.evaluate(() => {
+          const dialog = document.createElement("dialog");
+          document.body.append(dialog);
+          dialog.showModal();
+          const style = getComputedStyle(dialog, "::backdrop");
+          const result = { colour: style.backgroundColor, opacity: style.opacity };
+          dialog.close();
+          dialog.remove();
+          return result;
+        });
         const checkDialog = async (open, name) => {
           for (const cancel of ["Escape", "button"]) {
             await open();
@@ -455,9 +465,9 @@ test("presentation modal backdrops dim every dialog without changing keyboard ca
                 opacity: getComputedStyle(node).opacity,
               };
             });
-            assert.equal(backdrop.colour, "rgb(0, 0, 0)");
-            assert.equal(backdrop.backdropOpacity, "0.35");
-            assert.equal(backdrop.blur, "none");
+            assert.equal(backdrop.colour, nativeBackdrop.colour);
+            assert.equal(backdrop.backdropOpacity, nativeBackdrop.opacity);
+            assert.equal(backdrop.blur, "blur(4px)");
             assert.equal(backdrop.opacity, "1");
             assert.equal(backdrop.focusInside, true);
             await page.keyboard.press("Tab");
@@ -564,7 +574,11 @@ test("presentation footer keeps equal 12px control gaps and an external separato
     }
     await footer.getByRole("button", { name: "apply", exact: true }).click();
     await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
-    await page.waitForFunction(() => __draft().startsWith("/openspec-apply-change first-change"));
+    await page.waitForFunction(() =>
+      __draft().startsWith(
+        'Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "first-change".',
+      ),
+    );
     await page.evaluate(() => __edit("Completed"));
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await footer.getByRole("button", { name: "verify", exact: true }).waitFor();
@@ -619,9 +633,9 @@ test("presentation page fills short boards and preserves long board and detail s
             const pixels = context.getImageData(2, 0, 1, image.height).data;
             const dialog = document.querySelector("dialog[open]")?.getBoundingClientRect();
             const colours = new Set();
-            // The modal can span the sidebar. Sample only the exposed background.
-            for (let y = 2; y < image.height - 2; y++) {
-              if (dialog && y >= dialog.top - 2 && y <= dialog.bottom + 2) continue;
+            // Exclude the modal and viewport edges affected by the backdrop blur.
+            for (let y = dialog ? 16 : 2; y < image.height - (dialog ? 16 : 2); y++) {
+              if (dialog && y >= dialog.top - 16 && y <= dialog.bottom + 16) continue;
               colours.add([...pixels.slice(y * 4, y * 4 + 3)].join(","));
             }
             return [...colours];
@@ -705,7 +719,10 @@ test("Apply native menu dismisses without dispatch and prepares current-chat dra
     await panel.getByRole("menu").press("ArrowDown");
     await panel.getByRole("menu").press("Enter");
     await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
-    assert.match(await page.evaluate(() => __draft()), /^\/openspec-apply-change first-change/);
+    assert.match(
+      await page.evaluate(() => __draft()),
+      /^Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "first-change"\./,
+    );
     await panel.getByRole("button", { name: "first-change", exact: true }).click();
     await panel
       .locator(".detail-footer")
@@ -750,7 +767,10 @@ test("new-worktree Apply delegates a path-free first message and opens only afte
     assert.equal(start.projectId, "origin-project");
     assert.deepEqual(start.worktree, { kind: "new", name: "first-change" });
     assert.equal(start.navigation, "preserve");
-    assert.match(start.text, /^\/openspec-apply-change first-change/);
+    assert.match(
+      start.text,
+      /^Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "first-change"\./,
+    );
     assert.doesNotMatch(start.text, /\/tmp\/|copy|symlink/);
     assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
     assert.equal(
@@ -758,6 +778,14 @@ test("new-worktree Apply delegates a path-free first message and opens only afte
       false,
     );
     assert.equal(requests.find((r) => r.path === "open-session").body.sessionId, "apply-session");
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+    assert.equal(await page.evaluate(() => __draft()), start.text);
     await page.close();
   });
 });
@@ -1414,6 +1442,7 @@ test("archive all submits one completed-only prompt and preserves rail/page fres
         /done.*skipped/s,
         /sequentially/,
         /openspec-archive-change/,
+        /Use your skill tool to load and invoke the openspec-archive-change skill/,
         /unfinished/,
         /unavailable/,
         /unreadable/,
@@ -2622,7 +2651,7 @@ test("safe creation refreshes the board and prompts stay unsent", async () => {
     );
     assert.match(
       prompt.text,
-      /^\/openspec-apply-change created-change\n\nComplete all remaining tasks/,
+      /^Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "created-change"\.\n\nComplete all remaining tasks/,
     );
     assert.match(prompt.text, /all tasks are complete and verification passes/);
     assert.doesNotMatch(prompt.text, /\/tmp\/fixture-project/);
@@ -2653,7 +2682,10 @@ test("a fresh-chat draft receives replacement composition without sending or sta
       draft: __draft(),
       requests: __requests.filter((r) => ["compose", "prompt", "start-session"].includes(r.path)),
     }));
-    assert.match(result.draft, /^\/openspec-apply-change first-change\n1 of 2 tasks complete\./);
+    assert.match(
+      result.draft,
+      /^Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "first-change"\.\n1 of 2 tasks complete\./,
+    );
     assert.match(result.draft, /Pick up where implementation left off/);
     assert.match(result.draft, /verify the implementation against its change artefacts/);
     assert.match(result.draft, /Resolve any issues found and verify again/);
@@ -2818,7 +2850,11 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
       .getByRole("button", { name: "apply" })
       .click();
     await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
-    await page.waitForFunction(() => __draft().startsWith("/openspec-apply-change second-change"));
+    await page.waitForFunction(() =>
+      __draft().startsWith(
+        'Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "second-change".',
+      ),
+    );
     assert.match(await page.evaluate(() => __draft()), /Complete all remaining tasks/);
     assert.doesNotMatch(await page.evaluate(() => __draft()), /tasks complete\./);
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
@@ -2830,8 +2866,11 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
       .filter({ hasText: "first-change" })
       .getByRole("button", { name: "verify" })
       .click();
-    await page.waitForFunction(() => __draft() === "/openspec-verify-change first-change");
-    assert.equal(await page.evaluate(() => __draft()), "/openspec-verify-change first-change");
+    await page.waitForFunction(() => __draft().includes("openspec-verify-change"));
+    assert.equal(
+      await page.evaluate(() => __draft()),
+      'Use your skill tool to load and invoke the openspec-verify-change skill for OpenSpec change "first-change".',
+    );
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
     await page.evaluate(() => __readiness("pending"));
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
@@ -2841,10 +2880,10 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
       .filter({ hasText: "first-change" })
       .getByRole("button", { name: "propose" })
       .click();
-    await page.waitForFunction(() => __draft().startsWith("/openspec-propose first-change"));
+    await page.waitForFunction(() => __draft().includes("openspec-propose"));
     assert.match(
       await page.evaluate(() => __draft()),
-      /^\/openspec-propose first-change \(existing change\)\nGoal: Read the proposal\n\nInspect/,
+      /^Use your skill tool to load and invoke the openspec-propose skill for OpenSpec change "first-change" \(existing change\)\.\nGoal: Read the proposal\n\nInspect/,
     );
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
     assert.equal(
@@ -2878,7 +2917,7 @@ test("propose preserves goals and conditionally records a missing goal without s
       const draft = await page.evaluate(() => __draft());
       assert.ok(
         draft.startsWith(
-          `/openspec-propose first-change (existing change)${goal?.trim() ? `\nGoal: ${goal}` : ""}\n\n`,
+          `Use your skill tool to load and invoke the openspec-propose skill for OpenSpec change "first-change" (existing change).${goal?.trim() ? `\nGoal: ${goal}` : ""}\n\n`,
         ),
       );
       assert.match(draft, /Inspect .*status and current metadata/);
@@ -2942,11 +2981,11 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
       );
       if (stage === "Planning") {
         await card.getByRole("button", { name: "explore" }).click();
-        await page.waitForFunction(() => __draft().startsWith("/openspec-explore first-change"));
+        await page.waitForFunction(() => __draft().includes("openspec-explore"));
         assert.match(await page.evaluate(() => __draft()), /first-change.*Read the proposal/s);
         assert.match(
           await page.evaluate(() => __draft()),
-          /^\/openspec-explore first-change\nGoal: Read the proposal\n\nInvestigate/,
+          /^Use your skill tool to load and invoke the openspec-explore skill for OpenSpec change "first-change"\.\nGoal: Read the proposal\n\nInvestigate/,
         );
         assert.match(
           await page.evaluate(() => __draft()),
@@ -2965,7 +3004,7 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await card.getByRole("button", { name: "explore" }).click();
-    await page.waitForFunction(() => __draft().startsWith("/openspec-explore first-change\n\n"));
+    await page.waitForFunction(() => __draft().includes('"first-change".\n\n'));
     const draft = await page.evaluate(() => __draft());
     assert.match(draft, /inspect existing context and ask the user to clarify it if necessary/);
     assert.doesNotMatch(draft, /Goal:|record a|write a/);
@@ -3660,7 +3699,11 @@ test("completed board and detail independently prepare Verify and Archive withou
     assert.equal(colours.secondary, "rgb(32, 38, 42)");
     assert.notEqual(colours.primary, colours.secondary);
     await card.getByRole("button", { name: "archive", exact: true }).click();
-    await page.waitForFunction(() => __draft() === "/openspec-archive-change first-change");
+    await page.waitForFunction(() => __draft().includes("openspec-archive-change"));
+    assert.equal(
+      await page.evaluate(() => __draft()),
+      'Use your skill tool to load and invoke the openspec-archive-change skill for OpenSpec change "first-change".',
+    );
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
     assert.equal(await card.getByRole("button", { name: "verify" }).isEnabled(), true);
     assert.equal(await panel.getByRole("heading", { name: "Complete 1" }).count(), 1);
@@ -3694,7 +3737,11 @@ test("completed board and detail independently prepare Verify and Archive withou
       "ghost",
     );
     await panel.getByRole("button", { name: "verify", exact: true }).click();
-    await page.waitForFunction(() => __draft() === "/openspec-verify-change first-change");
+    await page.waitForFunction(() => __draft().includes("openspec-verify-change"));
+    assert.equal(
+      await page.evaluate(() => __draft()),
+      'Use your skill tool to load and invoke the openspec-verify-change skill for OpenSpec change "first-change".',
+    );
     assert.equal(
       await panel.getByRole("button", { name: "archive", exact: true }).isEnabled(),
       true,
