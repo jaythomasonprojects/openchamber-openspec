@@ -15,8 +15,9 @@
 - Browser tests use a fake SDK host for deterministic races. Service and integration tests also
   invoke the real CLI against disposable OpenSpec roots, not an installed extension or live project.
 - VS Code's **Setup: worktree** runs `uv run --no-project scripts/setup_worktree.py` (Python 3.12+).
-  It links `node_modules` and `openspec` from the main checkout, refusing conflicting destinations
-  or tracked paths. `openspec/` is untracked; worktrees reach shared planning through this symlink.
+  It links `node_modules` from the main checkout and refuses conflicting destinations or tracked
+  paths. Git checks out the tracked `openspec/` files in each worktree. To share uncommitted planning
+  through a project setup hook, see [Planning across worktrees](README.md#planning-across-worktrees).
   Installs affect every linked worktree; keep separate dependencies when branches differ.
 
 ## Runtime boundaries

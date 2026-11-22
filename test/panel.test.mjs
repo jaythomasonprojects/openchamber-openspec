@@ -799,6 +799,7 @@ test("planning replacement closes stale confirmations and refresh retains search
     await panel.getByRole("button", { name: "first-change", exact: true }).click();
     await panel.getByRole("tab", { name: /Tasks · Written/ }).waitFor();
     await panel.getByRole("tab", { name: /Proposal · Written/ }).waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/document").length >= 4);
     await page.evaluate(() => __planning("replacement"));
     await panel.getByRole("button", { name: "Delete change", exact: true }).click();
     await panel.getByRole("dialog").getByRole("button", { name: "delete", exact: true }).click();
@@ -1079,9 +1080,15 @@ test("whole batch failures retain stale cards and retry; changed roots reload", 
       await panel.getByRole("button", { name: "refresh", exact: true }).click();
       await panel.getByText(text, { exact: true }).waitFor();
       assert.equal(await panel.locator(".change-card").count(), 2);
+      const summariesBeforeRetry = await page.evaluate(
+        () => __requests.filter((item) => item.path === "/summaries").length,
+      );
       await panel.getByRole("button", { name: "Retry", exact: true }).click();
       await panel.getByText(text, { exact: true }).waitFor({ state: "hidden" });
-      await panel.getByRole("button", { name: "refresh", exact: true }).waitFor();
+      await page.waitForFunction(
+        (before) => __requests.filter((item) => item.path === "/summaries").length > before,
+        summariesBeforeRetry,
+      );
     }
     const before = await page.evaluate(
       () => __requests.filter((item) => item.path === "/changes").length,
@@ -1107,6 +1114,7 @@ test("copy change name routes exact IDs through the host with pointer and keyboa
     const copy = panel.getByRole("button", { name: "Copy change name", exact: true });
     await copy.waitFor({ timeout: 2000 });
     assert.equal(await copy.getAttribute("title"), "Copy change name");
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 4);
     const baseline = await page.evaluate(() => __requests.length);
     await page.evaluate(() => __holdClipboard());
     await copy.click();
@@ -1504,6 +1512,7 @@ test("archive all holds one launch and discards late feedback without refresh or
       const reads = await page.evaluate(
         () => __requests.filter((r) => r.path.startsWith("/")).length,
       );
+      await page.waitForFunction(() => __requests.some((r) => r.path === "start-session"));
       await archive.evaluate((node) => node.click());
       assert.equal(
         await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
@@ -1637,6 +1646,7 @@ test("Markdown panel links use SDK feedback and unchanged DOM survives sibling r
       node.querySelector("a").focus();
       node.querySelector("pre").scrollLeft = 30;
     });
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 4);
     await page.evaluate(() => {
       __releaseFile();
       __releaseFile();
@@ -1802,6 +1812,7 @@ test("affected area refresh retains handles and focus, wraps labels and discards
         labels,
       );
     }
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 4);
     const before = await page.evaluate(() => __requests.length);
     await panel.locator(".detail").evaluate((detail) => {
       window.__oldBadge = detail.querySelector(".affected-areas .oc-sdk-badge");
@@ -1954,6 +1965,7 @@ test("explicit Refresh retains opened-change observations until a new opening", 
     });
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByText("First version of proposal").waitFor();
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 4);
     assert.equal(
       await page.evaluate(
         () => __requests.filter((request) => request.path === "/document").length,
@@ -1965,6 +1977,7 @@ test("explicit Refresh retains opened-change observations until a new opening", 
     await panel.getByText("2 of 2 tasks complete", { exact: true }).waitFor();
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByText("Updated proposal").waitFor();
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 8);
     assert.equal(
       await page.evaluate(
         () => __requests.filter((request) => request.path === "/document").length,
@@ -2490,6 +2503,7 @@ test("document loading is status text, then content replaces it; failures show o
     await panel.locator(".document-status", { hasText: "Loading document…" }).waitFor();
     assert.equal(await panel.locator("pre:visible").count(), 0);
     assert.equal(await panel.locator(".detail-content p:visible").count(), 1);
+    await page.waitForFunction(() => __requests.some((r) => r.path === "/document"));
     await page.evaluate(() => __releaseFile());
     await panel.getByText("First version of proposal").waitFor();
     assert.equal(
@@ -2577,6 +2591,7 @@ test("create dialogue keeps concise actions and a width-stable busy button", asy
       assert.equal(await create.getAttribute("aria-busy"), "true");
       assert.equal(await create.isDisabled(), true);
       assert.ok(Math.abs((await create.boundingBox()).width - before.width) < 1);
+      await page.waitForFunction(() => __requests.some((item) => item.path === "/create"));
       await create.evaluate((button) => button.click());
       assert.equal(
         await page.evaluate(
@@ -3051,6 +3066,7 @@ test("board title and toolbar reflow as intact rows without moving the gutter", 
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     const search = panel.getByRole("searchbox", { name: "Search changes" });
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
     await search.fill("first");
     const tally = panel.locator(".board-tally");
     assert.match(await tally.innerText(), /2 changes.*1 of 2 tasks complete/);
@@ -3344,6 +3360,7 @@ test("delete confirmation stays visible and width-stable while the request is pe
       assert.equal(await confirm.getAttribute("aria-busy"), "true");
       assert.equal(await confirm.locator("svg:visible").count(), 0);
       assert.ok(Math.abs((await confirm.boundingBox()).width - before.width) < 1);
+      await page.waitForFunction(() => __requests.some((item) => item.path === "/delete"));
       await confirm.evaluate((button) => button.click());
       await page.keyboard.press("Escape");
       assert.equal(await dialog.isVisible(), true);
@@ -3884,8 +3901,15 @@ test("refresh swaps its icon for an in-button spinner without moving itself or t
       const before = { button: await refresh.boundingBox(), tally: await tally.boundingBox() };
       assert.equal(await refresh.locator("svg:visible").count(), 1);
       await page.evaluate(() => __holdListing());
+      const listed = await page.evaluate(
+        () => __requests.filter((r) => r.path === "/changes").length,
+      );
       await refresh.click();
       await refresh.locator(".oc-sdk-spinner-ring").waitFor();
+      await page.waitForFunction(
+        (n) => __requests.filter((r) => r.path === "/changes").length > n,
+        listed,
+      );
       assert.equal(await refresh.getAttribute("aria-busy"), "true");
       assert.equal(await refresh.locator("svg:visible").count(), 0);
       assert.equal(await refresh.isDisabled(), true);
@@ -4149,6 +4173,7 @@ test("custom artefacts with delimiter characters keep their document identities 
     await panel.getByRole("button", { name: "first-change" }).waitFor();
     await page.evaluate(() => __collidingLabels());
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 2);
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByRole("tab", { name: /specs:a · Written/ }).waitFor({ timeout: 5000 });
     await panel.getByRole("tab", { name: /specs:a · Written/ }).click();
@@ -4406,6 +4431,11 @@ test("detail refresh marks a removed change unavailable and ignores old context 
       .locator(".detail")
       .getByText("This change is no longer available", { exact: false })
       .waitFor();
+    await panel
+      .locator(".detail")
+      .getByRole("button", { name: "refresh", exact: true })
+      .locator(".oc-sdk-spinner-ring")
+      .waitFor({ state: "detached" });
     assert.equal(await panel.locator(".detail-footer button:enabled").count(), 0);
     assert.equal(await panel.getByRole("button", { name: "Delete change" }).isDisabled(), true);
     assert.equal(
@@ -4681,6 +4711,9 @@ test("uncertain creation checks its original project after the selected project 
     await panel.getByRole("heading", { name: "other-project" }).waitFor();
     await page.evaluate(() => __releaseCreate());
     await panel.getByText(/Return to \/tmp\/fixture-project/).waitFor();
+    await page.waitForFunction(() =>
+      __requests.some((item) => item.path === "/changes" && item.body.expectedRoot),
+    );
     assert.deepEqual(
       await page.evaluate(() =>
         __requests.filter((item) => item.path === "/changes" && item.body.expectedRoot),
@@ -4733,6 +4766,9 @@ test("Tasks and documents independently invalidate a replaced root before later 
       }, route);
       await panel.getByRole("button", { name: "first-change" }).click();
       await page.waitForFunction((path) => __completed.includes(path), route);
+      await page.waitForFunction(
+        () => __requests.filter((item) => item.path === "/changes").length >= 2,
+      );
       assert.equal(
         await page.evaluate(() => __requests.filter((item) => item.path === "/changes").length),
         2,

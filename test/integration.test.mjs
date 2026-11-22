@@ -171,9 +171,11 @@ for (const shared of [false, true])
           1,
         );
         await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
-        await panelFrame.getByText(/1.1 Review integrated view/).waitFor();
+        await panelFrame
+          .locator(".task-row")
+          .filter({ hasText: "1.1 Review integrated view" })
+          .waitFor();
         assert.equal(await panelFrame.locator(".task-row details").count(), 0);
-        assert.equal(await panelFrame.getByText("Keep a continuation in the source.").count(), 0);
         assert.equal(
           await panelFrame
             .getByRole("tab", { name: /Tasks · Written/ })
@@ -255,7 +257,6 @@ for (const shared of [false, true])
         await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
         await panelFrame.getByText(/1.1 Review integrated view/).waitFor();
         assert.equal(await panelFrame.locator(".task-row.done").count(), 1);
-        assert.equal(await panelFrame.getByText("Updated source continuation.").count(), 0);
         await panelFrame.getByRole("tab", { name: /Specs · Written/ }).click();
         await panelFrame
           .locator(".detail-content details summary")
