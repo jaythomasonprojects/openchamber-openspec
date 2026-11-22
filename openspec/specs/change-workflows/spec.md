@@ -10,21 +10,28 @@ explicitly chooses a new worktree or bulk archiving.
 
 ### Requirement: Use OpenSpec workflow vocabulary consistently
 
-Cards and detail SHALL label the primary planning action `propose`, both ready and in-progress
-implementation actions `apply`, and the completed primary action `archive`. The separate secondary
-completed action SHALL be `verify`, available independently of archive. Board stage headings and
-detail badges SHALL use Planning, Ready, In Progress and Complete. The board's manual reload action
-SHALL be labelled `refresh`. These are presentations of existing CLI-derived progress, not new
-persisted states. Standard artefact labels SHALL remain Proposal, Specs, Design and Tasks; custom
-artefact identifiers SHALL remain supported.
+Cards and detail SHALL label the Planning primary action by the configured workflows (`ff`,
+`continue` or `propose`), both ready and in-progress implementation actions `apply`, and the
+completed primary action `archive`. The separate secondary completed action SHALL be `verify`,
+available independently of archive and shown only when the verify workflow is configured. Board
+stage headings and detail badges SHALL use Planning, Ready, In Progress and Complete. The board's
+manual reload action SHALL be labelled `refresh`. These are presentations of existing CLI-derived
+progress, not new persisted states. Standard artefact labels SHALL remain Proposal, Specs, Design
+and Tasks; custom artefact identifiers SHALL remain supported.
 
 #### Scenario: Match actions across board and detail
 
-- **WHEN** a user views a change in each of the four stages and opens its detail
+- **WHEN** the core set is configured and a user views a change in each of the four stages and opens
+  its detail
 - **THEN** the primary labels match on both surfaces and call `openspec-propose`,
   `openspec-apply-change`, `openspec-apply-change` and `openspec-archive-change` respectively
-- **AND** Complete exposes secondary `verify` calling `openspec-verify-change` independently of
-  `archive`
+- **AND** Complete offers no `verify`
+
+#### Scenario: Verify configured
+
+- **WHEN** the verify workflow is configured and a user views a Complete change
+- **THEN** card and detail expose secondary `verify` calling `openspec-verify-change` independently
+  of `archive`
 
 ### Requirement: Propose completes the existing scaffold
 
@@ -62,12 +69,12 @@ agent to explain a conflict if the skill requires new-change creation.
 
 ### Requirement: Explore the goal from a Planning change card
 
-Every available Planning change card SHALL offer a compact secondary `explore` action alongside
-`propose`. Other stages SHALL NOT offer `explore`. The prompt SHALL name the change, include the
-recorded goal when present and explicitly call `openspec-explore` to investigate the goal, relevant
-code, options and trade-offs. It SHALL request discussion without file changes or implementation.
-Missing goals SHALL NOT be invented: the prompt SHALL direct the agent to inspect existing context
-and clarify the goal if necessary.
+Every available Planning change card SHALL offer a compact secondary `explore` action alongside its
+Planning primary action. Other stages SHALL NOT offer `explore`. The prompt SHALL name the change,
+include the recorded goal when present and explicitly call `openspec-explore` to investigate the
+goal, relevant code, options and trade-offs. It SHALL request discussion without file changes or
+implementation. Missing goals SHALL NOT be invented: the prompt SHALL direct the agent to inspect
+existing context and clarify the goal if necessary.
 
 #### Scenario: Explore a stated goal
 
@@ -290,14 +297,16 @@ agent completion events.
 ### Requirement: Bulk archive prompts exclude unfinished changes
 
 The submitted prompt SHALL request a fresh active-change listing in the session's OpenSpec context,
-inspection of current status and CLI-reported task completion, and sequential use of
-`openspec-archive-change` for completed changes only. Completion SHALL require every applicable
-planning artefact to be done or explicitly skipped and a positive task total with all tasks
-complete. The prompt SHALL NOT treat a Complete card as proof of verification. It SHALL exclude
-unfinished, unavailable or unreadable changes rather than permit archiving them with an
-incomplete-work override. It SHALL preserve the archive workflow's spec-sync assessment, user
-choices and blockers. It SHALL request a final report of archived, skipped and blocked changes, and
-no mutation when none qualify.
+inspection of current status and CLI-reported task completion, and archiving of completed changes
+only. When bulk-archive is configured it SHALL ask for `openspec-bulk-archive-change` and ask the
+agent to offer only qualifying changes for the skill's selection; otherwise it SHALL ask for
+sequential use of `openspec-archive-change`. Completion SHALL require every applicable planning
+artefact to be done or explicitly skipped and a positive task total with all tasks complete. The
+prompt SHALL NOT treat a Complete card as proof of verification. It SHALL exclude unfinished,
+unavailable or unreadable changes rather than permit archiving them with an incomplete-work
+override. It SHALL preserve the archive workflow's spec-sync assessment, user choices and blockers.
+It SHALL request a final report of archived, skipped and blocked changes, and no mutation when none
+qualify.
 
 #### Scenario: Completion changed since board load
 
@@ -307,8 +316,15 @@ no mutation when none qualify.
 #### Scenario: Several completed changes affect the same capability
 
 - **WHEN** multiple changes qualify for archival
-- **THEN** the prompt requests sequential processing and fresh sync assessment for each change
+- **THEN** the prompt requests fresh sync assessment for each change, sequentially when it uses
+  `openspec-archive-change`
 - **AND** it does not bypass required user choices or unresolved sync blockers
+
+#### Scenario: Bulk-archive configured
+
+- **WHEN** bulk-archive is configured and the user confirms archive all
+- **THEN** the submitted prompt asks for `openspec-bulk-archive-change`, offering only qualifying
+  changes for selection and skipping any selected change that does not qualify
 
 ### Requirement: Report partial or uncertain session launch outcomes
 
@@ -332,3 +348,187 @@ another launch.
 - **THEN** feedback warns that a session or submitted prompt may already exist and asks the user to
   inspect sessions before another launch
 - **AND** the extension does not automatically retry
+
+### Requirement: Workflow prompts explicitly request skill invocation
+
+Every generated workflow prompt SHALL use ordinary prose to ask the agent to load and invoke the
+appropriate named OpenSpec skill through its skill tool before performing that workflow. Generated
+workflow instructions SHALL use bare skill names rather than slash commands or dollar-prefixed
+mentions, without relying on host skill injection. User-supplied goal text SHALL remain unchanged.
+Existing workflow guidance, change identity, destinations and approval boundaries SHALL remain
+unchanged. The extension SHALL request skill invocation, not claim that a skill was loaded.
+
+#### Scenario: Prepare a per-change workflow
+
+- **WHEN** a user prepares Explore, Propose, Fast-forward, Continue, Apply, Verify or Archive in the
+  current chat
+- **THEN** the editable, unsent prompt explicitly requests loading and invoking `openspec-explore`,
+  `openspec-propose`, `openspec-ff-change`, `openspec-continue-change`, `openspec-apply-change`,
+  `openspec-verify-change` or `openspec-archive-change` respectively through the agent's skill tool
+- **AND** the generated workflow instruction uses neither a slash command nor a dollar mention
+- **AND** the existing change-specific guidance and recorded goal or progress remain present
+
+#### Scenario: Apply in a new worktree
+
+- **WHEN** a user explicitly chooses new-worktree Apply
+- **THEN** the submitted first message contains the same ordinary Apply prompt used for current-chat
+  preparation, including the explicit request to invoke `openspec-apply-change`
+- **AND** skill invocation does not depend on composer processing
+
+#### Scenario: Archive completed changes in bulk
+
+- **WHEN** a user confirms archive all
+- **THEN** the submitted prompt explicitly requests loading and invoking
+  `openspec-bulk-archive-change` when bulk-archive is configured, or otherwise
+  `openspec-archive-change` for qualifying changes sequentially, through the agent's skill tool
+- **AND** fresh completion checks, skips, spec-sync assessment, user choices and reporting remain
+  required
+
+### Requirement: Current-chat composition tracks the change in the session
+
+When a current-chat workflow action composes a prompt and the chat has a session, the extension
+SHALL add that change to the session's saved tracked-change list, keeping changes already in it. It
+SHALL save only after composition succeeds in a still-current context. A fresh-chat draft without
+a session SHALL save nothing. Saving SHALL NOT send, link items visibly on the session, or change
+OpenSpec files, and a save failure SHALL NOT undo or fail the composition.
+
+#### Scenario: Prepare apply in an existing session
+
+- **WHEN** session S tracks `fix-cache` and the user prepares apply for `add-login` in S
+- **THEN** the composer holds the unsent Apply prompt and S tracks `fix-cache` and `add-login`
+
+#### Scenario: Prepare in a fresh chat
+
+- **WHEN** the user prepares a workflow while the chat has no session
+- **THEN** the prompt is composed and no tracked change is saved
+
+#### Scenario: Composition fails
+
+- **WHEN** the host rejects composition
+- **THEN** no tracked change is saved
+
+### Requirement: New-worktree Apply records its change on the created session
+
+New-worktree Apply SHALL record the change it applies on the session it creates, so that the
+session shows that change as tracked without a saved list. Bulk archive sessions SHALL be recorded
+so that they never resolve as a change.
+
+#### Scenario: Apply in a new worktree
+
+- **WHEN** new-worktree Apply creates session S for `add-login`
+- **THEN** S shows `add-login` as tracked
+
+#### Scenario: Archive all
+
+- **WHEN** archive all creates session S
+- **THEN** S does not resolve any change from its recorded item
+
+### Requirement: Sync prepares a spec-sync prompt
+
+The section's `sync` chip SHALL replace the open composer's text with an unsent prompt asking the
+agent to load and invoke the `openspec-sync-specs` skill for that change, naming the change without
+paths. It SHALL NOT send or change files.
+
+#### Scenario: Prepare sync
+
+- **WHEN** the user activates `sync` on `add-login`
+- **THEN** the composer holds an unsent prompt requesting `openspec-sync-specs` for OpenSpec change
+  `add-login`
+
+### Requirement: Prepare fast-forward, continue and update prompts
+
+The section's `ff`, `continue` and `update` actions SHALL replace the open composer's text with an
+unsent prompt that asks the agent, in plain prose, to load and invoke `openspec-ff-change`,
+`openspec-continue-change` or `openspec-update-change` through its skill tool. The prompt SHALL
+name the change without paths and include its recorded goal when present. The actions SHALL NOT
+send, create sessions or worktrees, or change files.
+
+#### Scenario: Prepare fast-forward
+
+- **WHEN** the user activates `ff` on Planning change `add-login` with goal `Sign in with SSO`
+- **THEN** the composer holds an unsent prompt requesting `openspec-ff-change` for OpenSpec change
+  `add-login`, including the goal, that asks for every remaining planning artefact
+
+#### Scenario: Prepare continue
+
+- **WHEN** the user activates `continue` for Planning change `add-login`
+- **THEN** the composer holds an unsent prompt requesting `openspec-continue-change` that asks for
+  `add-login`'s next planning artefact
+
+#### Scenario: Prepare update
+
+- **WHEN** the user activates `update` for `add-login`
+- **THEN** the composer holds an unsent prompt requesting `openspec-update-change` that asks the
+  agent to revise `add-login`'s existing planning artefacts without editing code
+
+### Requirement: Prepare a new-change prompt
+
+The section's `new` action SHALL replace the open composer's text with an unsent prompt that asks
+the agent, in plain prose, to load and invoke `openspec-new-change` through its skill tool and to
+ask the user what the change is for before creating it. It SHALL name no change, and SHALL NOT
+send, create sessions or worktrees, change files or change tracking.
+
+#### Scenario: Prepare a new change
+
+- **WHEN** the user activates the footer's `new`
+- **THEN** the composer holds an unsent prompt requesting `openspec-new-change` that asks the user
+  what the change is for
+- **AND** the session's tracked changes are unchanged
+
+### Requirement: Board opens on a requested change
+
+When the section requests a change for the board's current project, the board SHALL show that
+change's detail, after its listing loads if it has not yet. If the change is not listed, the board
+SHALL reload once before deciding whether to show its detail. A request for another project
+SHALL leave the board at its list without reloading. A request SHALL take effect once.
+
+#### Scenario: Requested change exists
+
+- **WHEN** the section requests `add-login` and the board's listing contains it
+- **THEN** the board shows `add-login`'s detail
+
+#### Scenario: Requested change missing
+
+- **WHEN** the requested change is not in the board's listing
+- **THEN** the board reloads once and opens the detail if the change is now listed
+- **AND** if the change is still missing, the board stays at its list and shows a toast that names
+  the missing change
+
+### Requirement: Board reads the configured workflows at its loads
+
+The board SHALL read which OpenSpec workflows are configured on initial and context loads and on
+explicit Refresh, and SHALL use the core set (`propose`, `explore`, `apply`, `update`, `sync`,
+`archive`) when the read fails. Other board reads SHALL reuse the last result. A configured workflow
+SHALL count as expected to be installed, not as proof that its skill exists.
+
+#### Scenario: Refresh after a profile change
+
+- **WHEN** the user adds `verify` to their OpenSpec profile and activates the board's `refresh`
+- **THEN** Complete cards offer `verify`
+
+#### Scenario: Create a change
+
+- **WHEN** the board reloads after the panel creates a change
+- **THEN** it does not re-read the configured workflows
+
+#### Scenario: Older OpenSpec CLI
+
+- **WHEN** the CLI cannot report its configured workflows
+- **THEN** the board shows the core set's actions and no error
+
+### Requirement: Board Planning action follows the configured workflows
+
+The Planning primary action on cards and detail SHALL be `ff` when configured, else `continue` when
+configured, else `propose`. `ff` and `continue` SHALL compose the same unsent prompts as the
+section's `ff` and `continue` chips; `propose` SHALL keep its prompt.
+
+#### Scenario: Fast-forward configured
+
+- **WHEN** `ff` is configured and the user activates a Planning card's primary action
+- **THEN** the action is labelled `ff` on the card and in detail, and the composer holds an unsent
+  prompt requesting `openspec-ff-change` for that change
+
+#### Scenario: Core profile
+
+- **WHEN** the core set is configured
+- **THEN** the Planning primary action is `propose`

@@ -2,10 +2,12 @@ import { mountButton, mountMenu } from "@openchamber/sdk/ui";
 import type { Stage } from "../model.js";
 import { workflowLabel } from "./workflow.js";
 
-export type PrimaryIntent = "primary" | "worktree";
+type PrimaryWorkflow = ReturnType<typeof workflowLabel>;
+export type PrimaryIntent = PrimaryWorkflow | "worktree";
 type State = {
   id: string;
   stage: Stage;
+  workflow: PrimaryWorkflow;
   disabled: boolean;
   pending?: boolean;
   action: (intent: PrimaryIntent) => void;
@@ -20,7 +22,9 @@ export function mountPrimaryAction(root: HTMLElement) {
   const button = mountButton(buttonRoot, {
     label: "propose",
     size: "sm",
-    onClick: () => state?.action("primary"),
+    onClick: () => {
+      if (state) state.action(state.workflow);
+    },
   });
   const menu = mountMenu(menuRoot, {
     label: "apply",
@@ -39,7 +43,7 @@ export function mountPrimaryAction(root: HTMLElement) {
         (id === "worktree" && state?.pending)
       )
         return;
-      captured.action(id === "worktree" ? "worktree" : "primary");
+      captured.action(id === "worktree" ? "worktree" : captured.workflow);
     },
   });
   const trigger = menuRoot.querySelector("button")!;
@@ -53,7 +57,7 @@ export function mountPrimaryAction(root: HTMLElement) {
       const apply = next.stage === "ready" || next.stage === "progress";
       buttonRoot.hidden = apply;
       menuRoot.hidden = !apply;
-      button.update({ label: workflowLabel(next.stage), disabled: next.disabled });
+      button.update({ label: next.workflow, disabled: next.disabled });
       menu.update({
         items: [
           { id: "current", label: "Prepare in current chat", disabled: next.disabled },

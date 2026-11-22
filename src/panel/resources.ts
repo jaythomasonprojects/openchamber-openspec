@@ -11,7 +11,7 @@ type Entry<T> = {
 };
 
 export function createResources(
-  client: Pick<Client, "tasks" | "document">,
+  client: Pick<Client, "tasks" | "document" | "archived" | "specs" | "spec">,
   options: { maxBytes?: number } = {},
 ) {
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
@@ -23,6 +23,8 @@ export function createResources(
   const scopeKey = (scope: Scope) => JSON.stringify([scope.directory, scope.root, scope.planning]);
   const keyFor = (scope: Scope, change: string, kind: string, artifact = "", selector = "") =>
     JSON.stringify([scope.directory, scope.root, scope.planning, change, kind, artifact, selector]);
+  const changePrefix = (scope: Scope, change: string) =>
+    JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
   const active = (scope: Scope) => !disposed && !!context && scopeKey(context) === scopeKey(scope);
   const state = <T>(entry: Entry<T>): ReadState<T> => ({
     value: entry.value,
@@ -33,6 +35,13 @@ export function createResources(
     generation++;
     cache.clear();
     bytes = 0;
+  }
+  function removeEntries(matches: (key: string) => boolean) {
+    for (const [key, entry] of cache)
+      if (matches(key)) {
+        bytes -= entry.bytes;
+        cache.delete(key);
+      }
   }
   function setContext(scope: Scope | null) {
     if (context && scope && scopeKey(context) === scopeKey(scope)) return;
@@ -87,6 +96,20 @@ export function createResources(
   return {
     setContext,
     refresh,
+    refreshChanges() {
+      if (!context) return;
+      const browse = changePrefix(context, "");
+      removeEntries((key) => !key.startsWith(browse));
+    },
+    archived(scope: Scope) {
+      return read(scope, keyFor(scope, "", "archived"), () => client.archived(scope));
+    },
+    specs(scope: Scope) {
+      return read(scope, keyFor(scope, "", "specs"), () => client.specs(scope));
+    },
+    spec(scope: Scope, id: string, retry = false) {
+      return read(scope, keyFor(scope, "", "spec", id), () => client.spec(scope, id), retry);
+    },
     taskState(scope: Scope, change: string): ReadState<Task[]> | null {
       const entry = cache.get(keyFor(scope, change, "tasks")) as Entry<Task[]> | undefined;
       return active(scope) && entry ? state(entry) : null;
@@ -119,13 +142,8 @@ export function createResources(
       );
     },
     invalidateChange(scope: Scope, change: string) {
-      const prefix =
-        JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
-      for (const [key, entry] of cache)
-        if (key.startsWith(prefix)) {
-          bytes -= entry.bytes;
-          cache.delete(key);
-        }
+      const prefix = changePrefix(scope, change);
+      removeEntries((key) => key.startsWith(prefix));
     },
     dispose() {
       disposed = true;

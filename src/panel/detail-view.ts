@@ -1,10 +1,10 @@
 import { mountBadge, mountButton, mountTabs } from "@openchamber/sdk/ui";
-import { documentKey, type DocumentDescriptor, type Task } from "../contracts.js";
+import { documentKey, type DocumentDescriptor, type Task, type Workflow } from "../contracts.js";
 import type { DerivedChange } from "../model.js";
 import type { ReadState } from "./resources.js";
 import { mountDocumentView } from "./document-view.js";
 import { mountTasksView } from "./tasks-view.js";
-import { stageLabel } from "./workflow.js";
+import { stageLabel, workflowLabel } from "./workflow.js";
 import { mountPrimaryAction, type PrimaryIntent } from "./primary-action.js";
 import { addButtonIcon } from "./button-icon.js";
 import { mountAreaBadges } from "./area-badges.js";
@@ -20,6 +20,7 @@ export type DetailState = {
   loading: boolean;
   refreshError: string | null;
   pending?: boolean;
+  workflows: ReadonlySet<Workflow>;
   primaryAction: (intent: PrimaryIntent) => void;
 };
 
@@ -57,7 +58,7 @@ export function mountDetailView(
     selectTasks: () => void;
     retryTasks: () => void;
     retryDocument: (artifact: string, selector: string) => void;
-    action: (intent: "primary" | "verify" | "explore") => void;
+    action: (intent: "verify" | "explore") => void;
     delete: () => void;
     refresh: () => void;
     openUrl: (url: string) => void;
@@ -290,6 +291,7 @@ export function mountDetailView(
       action.update({
         id: state.change.id,
         stage: state.change.stage,
+        workflow: workflowLabel(state.change.stage, state.workflows),
         disabled: state.unavailable,
         pending: state.pending,
         action: state.primaryAction,
@@ -297,7 +299,7 @@ export function mountDetailView(
       exploreRoot.hidden = state.change.stage !== "planning";
       explore.update({ disabled: state.unavailable });
       deleteAction.update({ disabled: state.unavailable });
-      verifyRoot.hidden = state.change.stage !== "complete";
+      verifyRoot.hidden = state.change.stage !== "complete" || !state.workflows.has("verify");
       verify.update({ disabled: state.unavailable });
       currentOwner = taskArtifact(state.change);
       const items = state.change.artifacts.map((item) => ({

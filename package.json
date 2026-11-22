@@ -4,30 +4,41 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm run build:panel && npm run build:service",
+    "build": "npm run build:panel && npm run build:status && npm run build:service",
     "build:panel": "esbuild src/panel.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/main.js",
+    "build:status": "esbuild src/status.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/status.js",
     "build:service": "esbuild src/service.ts --bundle --format=cjs --platform=node --target=node22 --outfile=service/main.js",
     "build:model:test": "esbuild src/model.ts --bundle --format=esm --platform=node --target=node22 --outfile=build/model.mjs",
     "build:resources:test": "esbuild src/panel/resources.ts --bundle --format=esm --platform=node --target=node22 --outfile=build/resources.mjs",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm test && npm run build",
     "lint": "eslint src eslint.config.mjs",
     "lint:fix": "eslint src eslint.config.mjs --fix",
-    "format:check": "prettier --check src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
-    "format": "prettier --write src test panel/index.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
+    "format:check": "prettier --check src test panel/*.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
+    "format": "prettier --write src test panel/*.html service/package.json package.json tsconfig.json eslint.config.mjs README.md .prettierrc .vscode/tasks.json",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build:panel && npm run build:service && npm run build:model:test && npm run build:resources:test && node --test test/*.test.mjs",
-    "clean": "node -e \"for (const file of ['panel/main.js', 'service/main.js']) require('node:fs').rmSync(file, { force: true })\""
+    "test": "npm run build && npm run build:model:test && npm run build:resources:test && node --test test/*.test.mjs",
+    "clean": "node -e \"for (const file of ['panel/main.js', 'panel/status.js', 'service/main.js']) require('node:fs').rmSync(file, { force: true })\""
   },
   "openchamber": {
     "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.7.1"
+    },
     "contributes": {
       "panel": {
         "id": "openspec-board",
         "name": "OpenSpec",
         "icon": "assets/openspec-logo.svg",
-        "entry": "panel/index.html"
+        "entry": "panel/index.html",
+        "mobile": true
       },
       "page": true,
+      "statusSection": {
+        "entry": "panel/status.html",
+        "title": "OpenSpec",
+        "height": 160,
+        "requiresProject": true
+      },
       "capabilities": [
         "prompt",
         "sessions"
@@ -44,7 +55,7 @@
     }
   },
   "dependencies": {
-    "@openchamber/sdk": "1.24.2",
+    "@openchamber/sdk": "2.7.3",
     "dompurify": "^3.4.16",
     "marked": "^18.0.14",
     "yaml": "^2.8.2"

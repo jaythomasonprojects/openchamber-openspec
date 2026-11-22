@@ -54,6 +54,65 @@
         display: grid;
         gap: 16px;
       }
+      .board-tabs {
+        margin-top: 12px;
+      }
+      .board-body [hidden] {
+        display: none;
+      }
+      .browse-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .browse-list > li,
+      .browse-status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+      }
+      .browse-list > li {
+        padding: 8px 0;
+        border-bottom: 1px solid var(--oc-border);
+        overflow-wrap: anywhere;
+      }
+      .browse-meta {
+        color: var(--oc-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .spec-list > li {
+        padding: 0;
+      }
+      .spec-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        justify-content: space-between;
+        background: transparent;
+        color: var(--oc-foreground);
+        border: 0;
+        cursor: pointer;
+        padding: 8px;
+        text-align: start;
+        width: 100%;
+        overflow-wrap: anywhere;
+      }
+      .spec-row:hover {
+        background: var(--oc-hover);
+      }
+      .spec-row:focus-visible {
+        outline: 2px solid var(--oc-focus);
+        outline-offset: -2px;
+      }
+      .spec-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .spec-detail h1 {
+        overflow-wrap: anywhere;
+      }
       .heading,
       .detail-title-row {
         flex-wrap: wrap;
@@ -91,7 +150,8 @@
         display: inline-flex;
         align-items: center;
       }
-      .loading-action .oc-sdk-btn > svg {
+      .loading-action .oc-sdk-btn > svg,
+      .loading-action .oc-sdk-btn > .oc-sdk-spinner-ring {
         width: 14px;
         height: 14px;
         flex: none;
@@ -117,8 +177,16 @@
       .board-search .oc-sdk-search {
         width: 100%;
       }
+      .board-search .oc-sdk-search .oc-sdk-input {
+        height: 36px;
+      }
       body .oc-sdk-btn[data-size="sm"] {
         height: 28px;
+      }
+      body .oc-sdk-badge {
+        padding: 1px 6px;
+        font-size: 11px;
+        line-height: 16px;
       }
       .board {
         display: grid;
@@ -353,6 +421,9 @@
       .artifact-tabs .oc-sdk-tabs {
         padding: 0;
       }
+      .artifact-tabs .oc-sdk-tab {
+        height: 28px;
+      }
       .artifact-tabs .oc-sdk-tab > span {
         line-height: 18px;
       }
@@ -407,6 +478,7 @@
         flex-wrap: wrap;
         gap: 6px;
         padding: 12px 16px;
+        padding-bottom: calc(12px + var(--oc-inset-bottom, 0px));
       }
       .detail-footer::before {
         content: "";
@@ -556,6 +628,15 @@
         background: var(--oc-bg, #15191c);
         color: inherit;
       }
+      [data-pointer="coarse"] dialog[open]:not(.detail) {
+        box-sizing: border-box;
+        max-height: max(
+          0px,
+          calc(100dvh - max(var(--oc-keyboard, 0px), var(--oc-inset-bottom, 0px)) - 32px)
+        );
+        inset-block-end: max(var(--oc-keyboard, 0px), var(--oc-inset-bottom, 0px));
+        overflow: auto;
+      }
       dialog form {
         display: grid;
         gap: 12px;
@@ -571,6 +652,24 @@
         gap: 8px;
         justify-content: flex-end;
         flex-wrap: wrap;
+      }
+      [data-pointer="coarse"] :is(button, .oc-sdk-input, summary) {
+        min-height: 44px;
+      }
+      [data-pointer="coarse"] .oc-sdk-search-clear {
+        min-width: 44px;
+        right: 0;
+      }
+      [data-pointer="coarse"] .board-search .oc-sdk-search .oc-sdk-input {
+        padding-right: 44px;
+      }
+      [data-pointer="coarse"] :is(.detail-back button, .detail-copy button, .help-control button) {
+        min-width: 44px;
+      }
+      [data-pointer="coarse"] .document-content a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
       }
       @media (max-width: 560px) {
         .board-header .heading {

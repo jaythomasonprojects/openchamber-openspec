@@ -43,11 +43,15 @@ const artifacts = [
   { id: "specs", status: "done", outputPath: "specs/**/*.md", requires: ["proposal"] },
   { id: "tasks", status: "done", outputPath: "tasks.md", requires: ["specs"] },
 ];
-function hostHtml() {
+function hostHtml(statusCase, pointer, popovers) {
   const data = JSON.stringify({ directory, root, artifacts, theme: theme("dark") });
   const themes = JSON.stringify({ dark: theme("dark"), light: theme("light") });
   return `<!doctype html><script>
     const { directory, root, artifacts, theme } = ${data};
+    const statusCase = ${JSON.stringify(statusCase)};
+    const pointer = ${JSON.stringify(pointer)};
+    const popovers = ${JSON.stringify(popovers)};
+    const statusDirectory = statusCase === "worktree" ? "/tmp/fixture-worktree" : directory;
     let currentRoot = root;
     let currentPlanning = "fixture-planning";
     let projects = [{ id: "origin-project", name: "Origin", directory }];
@@ -56,6 +60,41 @@ function hostHtml() {
     window.__projects = value => { projects = value; };
     window.__worktrees = value => { worktrees = value; };
     const guests = new Set();
+    let popover = null;
+    let board = null;
+    let pendingFocus = null;
+    window.__focusClaims = [];
+    const post = (guest, type, payload) =>
+      guest.postMessage({ channel: "openchamber.sdk", v: 1, type, payload }, "*");
+    const readyFor = (guest) => popover && popover.frame.contentWindow === guest
+      ? { ...ready, directory: popover.directory, surface: "popover", item: null, features: undefined, popover: popover.context }
+      : board && board.frame.contentWindow === guest
+      ? { ...ready, surface: "panel", directory: board.directory }
+      : ready;
+    window.__mountBoard = (boardDirectory = directory) => {
+      if (board) {
+        guests.delete(board.frame.contentWindow);
+        board.frame.remove();
+      }
+      const frame = document.createElement("iframe");
+      frame.src = "/panel/index.html";
+      frame.title = "OpenSpec test board";
+      frame.style.height = "700px";
+      board = { frame, directory: boardDirectory };
+      document.body.append(frame);
+    };
+    const closePopover = (reason) => {
+      if (!popover) return;
+      const { owner, frame, context } = popover;
+      guests.delete(frame.contentWindow);
+      frame.remove();
+      popover = null;
+      post(owner, "popover-closed", { id: context.id, reason });
+    };
+    window.__closePopover = closePopover;
+    window.__serviceEvent = (topic, data) => {
+      for (const guest of guests) post(guest, "service-event", { topic, data });
+    };
     const changes = [
       { id: "first-change", goal: "Read the proposal", completedTasks: 1, totalTasks: 2 },
       { id: "second-change", goal: "Review the specs", completedTasks: 0, totalTasks: 0 },
@@ -71,6 +110,17 @@ function hostHtml() {
     let holdListing = false;
     let holdSummaries = location.search.includes("hold-summary");
     const pendingSummaries = [];
+    const pendingValidation = [];
+    let holdValidation = false;
+    let validationResult = null;
+    window.__validation = (value) => { validationResult = value; };
+    let rejectNextPopover = false;
+    window.__holdValidation = () => { holdValidation = true; };
+    window.__releaseValidation = () => {
+      holdValidation = false;
+      pendingValidation.splice(0).forEach((finish) => finish());
+    };
+    window.__rejectNextPopover = () => { rejectNextPopover = true; };
     let failSummary = location.search.includes("fail-summary");
     let batchReply = "";
     window.__batchReply = (value) => { batchReply = value; };
@@ -87,6 +137,21 @@ function hostHtml() {
     let unknownDelete = false;
     let malformedDelete = false;
     let failNextListing = false;
+    let workflows = ["propose", "explore", "apply", "update", "sync", "archive"];
+    window.__workflows = (value) => { workflows = value; };
+    let archivedChanges = [];
+    window.__archived = (changes) => { archivedChanges = changes; };
+    let mainSpecs = [];
+    const mainSpecContent = new Map();
+    window.__specs = (specs) => { mainSpecs = specs; };
+    window.__spec = (id, content) => { mainSpecContent.set(id, content); };
+    let holdWorkflows = false;
+    const pendingWorkflows = [];
+    window.__holdWorkflows = () => { holdWorkflows = true; };
+    window.__releaseWorkflows = () => {
+      holdWorkflows = false;
+      pendingWorkflows.splice(0).forEach((finish) => finish());
+    };
     const pendingDeletes = [];
     const pendingCreates = [];
     let holdProposal = false;
@@ -101,6 +166,19 @@ function hostHtml() {
     let draft = "Earlier draft";
     let holdCompose = false;
     let failCompose = false;
+    const storage = new Map();
+    const deviceStorage = new Map();
+    let failStorage = false;
+    window.__stored = () => Object.fromEntries(storage);
+    window.__seedStorage = (entries) => { for (const [key, value] of entries) storage.set(key, value); };
+    window.__deviceStored = () => Object.fromEntries(deviceStorage);
+    window.__seedDeviceStorage = (entries) => { for (const [key, value] of entries) deviceStorage.set(key, value); };
+    window.__remountStatus = () => {
+      const frame = document.querySelector('iframe[title="OpenSpec test panel"]');
+      guests.delete(frame.contentWindow);
+      frame.replaceWith(frame.cloneNode(false));
+    };
+    window.__failStorage = () => { failStorage = true; };
     let failOpenUrl = false;
     let holdClipboard = false;
     let failClipboard = false;
@@ -124,7 +202,10 @@ function hostHtml() {
     const pending = [];
     window.__requests = [];
     window.__completed = [];
-    window.__edit = (text) => { proposal = text; tasks[1].done = true; changes[0].completedTasks = 2; };
+    window.__edit = (text) => { proposal = text;
+      if (statusCase === "progress" || statusCase === "compact-progress") { tasks[3].done = true; changes[0].completedTasks = 4; }
+      else { tasks[1].done = true; changes[0].completedTasks = 2; }
+    };
     window.__unedit = () => { tasks[1].done = false; changes[0].completedTasks = 1; };
     window.__goal = (id, value) => { changes.find((item) => item.id === id).goal = value; };
     window.__areas = (id, value) => { changes.find((item) => item.id === id).affectedAreas = value; };
@@ -132,8 +213,10 @@ function hostHtml() {
     window.__remove = (id) => { const index = changes.findIndex((item) => item.id === id); changes.splice(index, 1); };
     window.__recreate = (id) => { changes.push({ id, goal: "Recreated goal", completedTasks: 0, totalTasks: 0 }); };
     window.__addSameStage = () => { changes.push({ id: "alpha-change", goal: "Another goal", completedTasks: 1, totalTasks: 2 }); };
-    window.__theme = (mode) => { for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
-      type: "ready", payload: { ...ready, theme: ${themes}[mode] } }, "*"); };
+    window.__theme = (mode) => {
+      ready.theme = ${themes}[mode];
+      for (const guest of guests) post(guest, "ready", readyFor(guest));
+    };
     window.__failSummary = () => { failSummary = true; };
     window.__failDocument = () => { failDocument = true; };
     window.__failTasks = () => { failTasks = true; };
@@ -162,10 +245,18 @@ function hostHtml() {
     window.__longArtifact = () => { longArtifact = true; };
     window.__readiness = (mode) => { readinessCase = mode; };
     window.__proposalStatus = (status) => { artifacts[0].status = status; };
+    window.__specsStatus = (status) => { artifacts[1].status = status; };
     window.__draft = () => draft;
-    window.__session = (id) => { ready.session = id ? { id } : null;
+    window.__session = (id, busy = false) => { ready.session = id ? { id, busy } : null;
+      for (const guest of guests) post(guest, "ready", readyFor(guest));
+      for (const guest of guests) post(guest, "session", { session: ready.session });
+      if (statusCase && id) __lifecycle(id, busy ? "started" : "completed");
+    };
+    window.__lifecycle = (sessionId, phase) => {
+      if (ready.session?.id === sessionId) ready.session.busy = phase === "started";
       for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
-        type: "session", payload: { session: ready.session } }, "*"); };
+        type: "session-lifecycle", payload: { sessionId, phase } }, "*");
+    };
     window.__holdCompose = () => { holdCompose = true; };
     window.__releaseCompose = () => { holdCompose = false; pendingCompose.splice(0).forEach((finish) => finish()); };
     window.__failCompose = () => { failCompose = true; };
@@ -177,41 +268,158 @@ function hostHtml() {
     window.__holdSummaries = () => { holdSummaries = true; };
     window.__holdFiles = () => { holdFiles = true; };
     window.__releaseFile = () => { const finish = pending.shift(); finish?.(); };
-    window.__directory = (next) => { ready.directory = next; for (const guest of guests) guest.postMessage({ channel: "openchamber.sdk", v: 1,
-      type: "directory", payload: { directory: next } }, "*"); };
+    window.__directory = (next) => {
+      if (next !== ready.directory) closePopover("owner");
+      ready.directory = next;
+      for (const guest of guests) post(guest, "directory", { directory: next });
+    };
     window.__root = (next) => { currentRoot = next; };
     window.__planning = next => { currentPlanning = next; };
-    const ready = { directory, theme, locale: "en-AU", session: { id: "fixture-session" },
-      surface: "panel", connection: { connected: true, account: "" }, settings: {}, item: null };
+    const ready = { directory: statusDirectory, theme, locale: "en-AU",
+      session: statusCase === "new" ? null : { id: "fixture-session", busy: false },
+      surface: statusCase ? "status" : "panel", connection: { connected: true, account: "" }, settings: {}, item: null };
+    if (popovers) ready.features = { popovers: true };
+    if (location.search.includes("device-storage")) ready.features = { ...ready.features, deviceStorage: true };
+    if (statusCase === "mount-burst") ready.session.busy = true;
+    if (pointer) ready.device = { formFactor: pointer === "coarse" ? "phone" : "desktop", pointer,
+      insets: { top: 0, right: 0, bottom: 0, left: 0 }, keyboard: 0 };
+    window.__device = (bottom, keyboard) => {
+      ready.device = { ...ready.device, insets: { ...ready.device.insets, bottom }, keyboard };
+      __theme("light");
+    };
+    if (statusCase) {
+      const worktree = statusCase === "worktree"
+        ? { directory: statusDirectory, name: "second-change", branch: "second-change", status: "ready" } : null;
+      if (worktree) worktrees = [worktree];
+      const items = statusCase === "archive"
+        ? [{ id: "archive-all", data: { kind: "archive-all" } }]
+        : [{ id: "first-change", data: { kind: "change", change: "first-change" } }];
+      sessions = [{ id: "fixture-session", title: "Fixture", projectId: "origin-project",
+        directory: statusDirectory, parentId: null, createdAt: 1, updatedAt: 1, archivedAt: null,
+        worktree, activity: "idle", outcome: null, items: worktree ? [] : items }];
+      if (statusCase === "saved" || statusCase === "stale" || statusCase === "legacy-value")
+        storage.set("session-change:fixture-session", statusCase === "legacy-value"
+          ? { change: "second-change", savedAt: 1 }
+          : { changes: [statusCase === "saved" ? "second-change" : "old-change"], savedAt: 1 });
+      if (statusCase === "other-directory-error" || statusCase === "unregistered-saved")
+        storage.set("session-change:fixture-session", { changes: ["second-change"], savedAt: 1 });
+      if (statusCase.startsWith("unregistered-")) projects = [];
+      if (statusCase === "stale") sessions[0].items = [];
+      if (statusCase === "switch") sessions.push({ ...sessions[0], id: "replacement-session",
+        items: [{ id: "second-change", data: { kind: "change", change: "second-change" } }] });
+      if (statusCase === "header") ready.features = { ...ready.features, statusControls: true };
+      if (statusCase === "picker") {
+        sessions[0].items = [];
+        changes.unshift(
+          { id: "complete-change", goal: null, completedTasks: 2, totalTasks: 2 },
+          { id: "not-started-change", goal: null, completedTasks: 0, totalTasks: 2 },
+          { id: "z-progress-change", goal: null, completedTasks: 1, totalTasks: 3 },
+        );
+      }
+      if (statusCase === "archive") changes.push({ id: "archive-all", goal: null, completedTasks: 0, totalTasks: 0 });
+      if (statusCase === "long-goal") changes[0].goal = "a".repeat(17000);
+      if (statusCase === "escaped-goal") changes[0].goal = String.fromCharCode(1).repeat(17000);
+      if (statusCase.startsWith("compact-"))
+        storage.set("session-change:fixture-session", { changes: ["first-change", "second-change"], savedAt: 1 });
+      if (["progress", "complete", "compact-progress", "compact-complete", "compact-read-error", "compact-touch"].includes(statusCase)) {
+        changes[0].completedTasks = statusCase.endsWith("complete") ? 7 : 3;
+        changes[0].totalTasks = 7;
+        tasks = Array.from({ length: 7 }, (_, index) => ({
+          id: String(index + 1),
+          description: index === 3 ? "2.1 Add a section that tracks a change\\nKeep the whole description readable when expanded." : "Task " + (index + 1),
+          done: index < changes[0].completedTasks,
+        }));
+      }
+      if (statusCase === "compact-touch") tasks[3].description = "long-task-title-".repeat(20);
+      if (statusCase === "long-card-name") {
+        changes[0].id = "long-name-".repeat(15) + "change";
+        changes[0].completedTasks = changes[0].totalTasks = 6;
+        sessions[0].items = [{ id: changes[0].id }];
+        tasks = Array.from({ length: 6 }, (_, i) => ({
+          id: String(i + 1), description: "Task " + (i + 1), done: true,
+        }));
+      }
+      if (statusCase === "compact-read-error") failSummary = true;
+      if (statusCase === "planning" || statusCase === "compact-planning") {
+        changes[0].completedTasks = changes[0].totalTasks = 0;
+        tasks = [];
+        readinessCase = "blocked-tasks";
+      }
+    }
     addEventListener("message", (event) => {
       const message = event.data;
       if (!message || message.channel !== "openchamber.sdk" || message.v !== 1) return;
        const reply = (payload) => { if (message.type === "service-request") __completed.push(message.payload.path);
          event.source.postMessage({ channel: "openchamber.sdk", v: 1,
-           type: "result", id: message.id, ok: true, payload }, "*"); };
+           type: "result", id: message.id, ok: true, ...(payload === undefined ? {} : { payload }) }, "*"); };
       if (message.type === "hello") {
         guests.add(event.source);
-        const show = () => event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "ready", payload: ready }, "*");
-        if (location.search.includes("hold-ready")) window.__releaseReady = show;
+         const show = () => {
+           const context = readyFor(event.source);
+           post(event.source, "ready", context);
+           if (statusCase) {
+             post(event.source, "directory", { directory: context.directory });
+             post(event.source, "session", { session: context.session });
+           }
+           if (statusCase && context.session) post(event.source, "session-lifecycle", {
+             sessionId: context.session.id, phase: context.session.busy ? "started" : "completed",
+           });
+         };
+        if (location.search.includes("hold-ready") && readyFor(event.source).surface !== "popover")
+          window.__releaseReady = show;
         else show();
         return;
       }
-      if (message.type === "service-request") {
-        const path = message.payload.path;
-        const body = JSON.parse(message.payload.body);
+       if (message.type === "service-request") {
+         const path = message.payload.path;
+         if (path === "/focus" && message.payload.method === "GET") {
+           const targetDirectory = message.payload.query?.directory;
+           __focusClaims.push(targetDirectory);
+           const claim = pendingFocus?.directory === targetDirectory ? pendingFocus : null;
+           if (claim) pendingFocus = null;
+           reply({ status: 200, body: JSON.stringify(claim) });
+           return;
+         }
+         const body = JSON.parse(message.payload.body);
         window.__requests.push({ path, body });
         const send = (value, status = 200) => reply({ status, body: JSON.stringify(value && typeof value === "object" ? { planning: currentPlanning, ...value } : value) });
         if (body.expectedPlanning && body.expectedPlanning !== currentPlanning) {
           send({error:{code:"PLANNING_CHANGED",message:"Planning target changed. Refresh to establish the new scope."}},409); return;
         }
-        if (path === "/changes") {
+          if (path === "/workflows") {
+            const configured = workflows;
+            const finish = () => {
+              if (configured === null)
+                reply({ status: 422, body: JSON.stringify({ error: { code: "OPENSPEC_ERROR", message: "Cannot read workflows" } }) });
+              else reply({ status: 200, body: JSON.stringify({ workflows: configured }) });
+            };
+            if (holdWorkflows) pendingWorkflows.push(finish); else finish();
+         }
+         else if (path === "/changes") {
            if (failNextListing) { failNextListing = false;
              send({ error: { code: "CLI_UNAVAILABLE", message: "Cannot check listing" } }, 503); return; }
-           const finish = () => send({ directory: body.directory, root: body.directory === directory ? currentRoot : body.directory + "/openspec",
-            changes: body.directory === directory ? changes.map(({ id, completedTasks, totalTasks }) => ({ id, completedTasks, totalTasks })) : [] });
+           const local = body.directory === statusDirectory;
+           const finish = () => send({ directory: body.directory, root: local ? currentRoot : body.directory + "/openspec",
+             changes: local ? changes.map(({ id, completedTasks, totalTasks }) => ({ id, completedTasks, totalTasks })) : [] });
           if (holdListing) pending.push(finish); else finish();
         }
-        else if (path === "/summaries") {
+         else if (path === "/archived") {
+           if (archivedChanges === null)
+             send({ error: { code: "OPENSPEC_ERROR", message: "Cannot list archived changes" } }, 422);
+           else send({ changes: archivedChanges });
+         }
+         else if (path === "/specs") {
+           if (mainSpecs === null)
+             send({ error: { code: "OPENSPEC_ERROR", message: "Cannot list specs" } }, 422);
+           else send({ specs: mainSpecs });
+         }
+         else if (path === "/spec") {
+           const content = mainSpecContent.get(body.spec);
+           if (typeof content !== "string")
+             send({ error: { code: "SPEC_UNAVAILABLE", message: "Spec is no longer listed." } }, 404);
+           else reply({ status: 200, body: JSON.stringify({ id: body.spec, content }) });
+         }
+         else if (path === "/summaries") {
           if (body.directory !== directory) { send({ root: body.directory + "/openspec", changes: [] }); return; }
           if (batchReply) {
             const mode = batchReply; batchReply = "";
@@ -231,8 +439,32 @@ function hostHtml() {
           if (holdSummaries) {
             pendingSummaries.push(finish);
           } else finish();
-        }
-        else if (path === "/tasks") {
+         }
+         else if (path === "/summary") respondSummary(body, send);
+         else if (path === "/focus") {
+           pendingFocus = body;
+           __serviceEvent("focus");
+           send({ ok: true });
+         }
+          else if (path === "/validate") {
+            if (body.change === "first-change") {
+              const value = validationResult ?? { valid: true, issues: [] };
+              const finish = () => send(value);
+             if (holdValidation) pendingValidation.push(finish); else finish();
+           }
+           else if (statusCase === "compact-validation-budget") send({ valid: false,
+               issues: [
+                 { level: "INFO", path: "file", message: "This note does not affect validation." },
+                 ...Array.from({ length: 23 }, (_, i) => ({
+                   level: "ERROR", path: "specs/" + i, message: String.fromCharCode(1).repeat(400),
+                 })),
+                 { level: "INFO", path: "file", message: "An omitted note is not an omitted issue." },
+               ] });
+           else send({ valid: false, issues: Array.from({ length: 23 }, (_, i) => ({
+             level: "ERROR", path: "specs/" + i, message: ("Issue " + i + " ").padEnd(400, "x"),
+           })) });
+         }
+         else if (path === "/tasks") {
           if (rootErrorPath === path) { rootErrorPath = ""; send({ error: { code: "ROOT_CHANGED", message: "Root changed" } }, 409); return; }
           if (unavailable) send({ error: { code: "CHANGE_UNAVAILABLE", message: "Change no longer exists." } }, 404);
            else if (failTasks) { failTasks = false; send({ error: { code: "TASKS_UNAVAILABLE", message: "Retry these tasks" } }, 503); }
@@ -295,6 +527,26 @@ function hostHtml() {
         if (holdCompose) pendingCompose.push(finish); else finish();
         return;
       }
+      if (message.type === "storage") {
+        const { op, key, value, scope } = message.payload;
+        window.__requests.push({ path: "storage", body: message.payload });
+        if (failStorage || (scope === "device" && !ready.features?.deviceStorage)) {
+          event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result",
+            id: message.id, ok: false, code: "HOST_REJECTED", error: "Storage unavailable" }, "*");
+          return;
+        }
+        const shelf = scope === "device" ? deviceStorage : storage;
+        if (op === "get") reply(shelf.has(key)
+          ? { storage: true, op, found: true, value: shelf.get(key) }
+          : { storage: true, op, found: false });
+        else if (op === "keys") reply({ storage: true, op, keys: [...shelf.keys()].sort() });
+        else if (op === "set" || op === "delete") {
+          if (op === "set") shelf.set(key, value);
+          else shelf.delete(key);
+          reply({ storage: true, op });
+        }
+        return;
+      }
       if (message.type === "start-session") {
         window.__requests.push({ path: "start-session", body: message.payload, directory: ready.directory });
         const finish = () => startError
@@ -305,11 +557,82 @@ function hostHtml() {
         return;
       }
       if (message.type === "workspace-read") {
+         window.__requests.push({path:message.type,body:message.payload});
+         const query = message.payload;
+         const sessionState = statusCase === "unready-tracking" ? "loading" : "ready";
+         reply(query.kind === "projects" ? {kind:"projects",state:"ready",projects} :
+           query.kind === "worktrees" ? {kind:"worktrees",projectId:query.projectId,state:"ready",worktrees} :
+           {kind:"sessions",projectId:query.projectId,state:sessionState,coverage:[{ directory: statusDirectory, state: sessionState }],sessions});
+        return;
+      }
+      if (message.type === "workspace-subscribe") {
         window.__requests.push({path:message.type,body:message.payload});
-        const query = message.payload;
-        reply(query.kind === "projects" ? {kind:"projects",state:"ready",projects} :
-          query.kind === "worktrees" ? {kind:"worktrees",projectId:query.projectId,state:"ready",worktrees} :
-          {kind:"sessions",projectId:query.projectId,state:"ready",coverage:[],sessions});
+        const { subscriptionId, query } = message.payload;
+         const sessionState = statusCase === "unready-tracking" ? "loading" : "ready";
+         const coverage = [{ directory: statusDirectory, state: sessionState }];
+        if (statusCase === "other-directory-error") coverage.push({ directory: "/tmp/other-worktree", state: "error" });
+        event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "workspace",
+          payload: { subscriptionId, snapshot: { kind: "sessions", projectId: query.projectId,
+             state: statusCase === "other-directory-error" ? "error" : sessionState, coverage, sessions } } }, "*");
+        reply();
+        return;
+      }
+        if (message.type === "popover-open") {
+          window.__requests.push({ path: message.type, body: message.payload });
+          if (rejectNextPopover) {
+            rejectNextPopover = false;
+            event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result",
+              id: message.id, ok: false, code: "HOST_REJECTED", error: "Popover anchor was not visible" }, "*");
+            return;
+          }
+         const { id, data, width, height } = message.payload;
+         const ownerFrame = [...document.querySelectorAll("iframe")].find((frame) => frame.contentWindow === event.source);
+         closePopover("replaced");
+         const frame = document.createElement("iframe");
+         frame.src = ownerFrame.src;
+         frame.title = "OpenSpec test popover";
+         frame.style.width = width + "px";
+         frame.style.height = height + "px";
+         popover = { owner: event.source, directory: readyFor(event.source).directory, frame, context: { id, data } };
+         document.body.append(frame);
+         reply();
+         return;
+       }
+       if (message.type === "popover-close" || message.type === "popover-anchor") {
+         window.__requests.push({ path: message.type, body: message.payload });
+         if (popover?.frame.contentWindow === event.source && message.payload.id !== popover.context.id) {
+           event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result", id: message.id,
+             ok: false, code: "HOST_REJECTED", error: "A popover may close or report activity only for itself." }, "*");
+           return;
+         }
+         reply();
+         if (message.type === "popover-close" && message.payload.id === popover?.context.id)
+           closePopover(message.payload.reason ?? "closed");
+         return;
+       }
+       if (message.type === "status-controls") {
+         window.__requests.push({ path: message.type, body: message.payload });
+         const context = readyFor(event.source);
+         if (context.surface !== "status" || !context.features?.statusControls) {
+           event.source.postMessage({ channel: "openchamber.sdk", v: 1, type: "result", id: message.id,
+             ok: false, code: "UNSUPPORTED", error: "This frame has no status header." }, "*");
+           return;
+         }
+         reply();
+         return;
+       }
+       if (["workspace-unsubscribe", "resize", "open-surface"].includes(message.type)) {
+         window.__requests.push({path:message.type,body:message.payload});
+         if (message.type === "open-surface" && location.search.includes("open-board") && !board)
+           __mountBoard(readyFor(event.source).directory);
+         if (statusCase && message.type === "resize") {
+           const frame = [...document.querySelectorAll("iframe")].find((frame) => frame.contentWindow === event.source);
+           if (frame === popover?.frame)
+             frame.style.height = Math.max(48, Math.min(480, message.payload.height + (pointer === "coarse" ? 0 : 2))) + "px";
+           else if (frame && !board?.frame.isSameNode(frame))
+             frame.style.height = Math.max(24, Math.min(480, message.payload.height)) + "px";
+         }
+        reply();
         return;
       }
       if (message.type === "open-session") {
@@ -348,7 +671,7 @@ function hostHtml() {
           if (!item) send({ error: { code: "CHANGE_UNAVAILABLE", message: "Removed" } }, 404);
           else if (failSummary && item.id === "first-change") { failSummary = false;
             send({ error: { code: "UNAVAILABLE", message: "Read failed" } }, 503); }
-           else if (readinessCase) send({ id: item.id, goal: item.goal, root: currentRoot,
+            else if (readinessCase && (statusCase !== "compact-planning" || item.id === "first-change")) send({ id: item.id, goal: item.goal, root: currentRoot,
              artifacts: [
                 { id: "proposal", status: readinessCase === "unknown" ? "done" : "ready", outputPath: "proposal.md", requires: [] },
                  { id: "specs", status: "blocked", outputPath: "specs/**/*.md", requires: ["proposal"] },
@@ -378,7 +701,7 @@ function hostHtml() {
               { artifactId: "tasks", selector: "tasks.md", label: "tasks.md" }]),
           ] });
     }
-  </script><style>body{margin:0}iframe{display:block;width:100%;height:100vh;border:0}</style><iframe src="/panel/index.html" title="OpenSpec test panel"></iframe>`;
+  </script><style>body{margin:0}iframe{display:block;width:100%;height:${statusCase ? "160px" : "100vh"};border:0}</style><iframe src="/panel/${statusCase ? "status" : "index"}.html" title="OpenSpec test panel"></iframe>`;
 }
 
 async function withPanel(run) {
@@ -387,16 +710,36 @@ async function withPanel(run) {
     readFile(new URL("../panel/main.js", import.meta.url)),
   ]);
   const server = createServer((request, response) => {
-    const path = new URL(request.url, "http://127.0.0.1").pathname;
+    const { pathname: path, searchParams } = new URL(request.url, "http://127.0.0.1");
     if (path === "/") {
       response.setHeader("content-type", "text/html");
-      response.end(hostHtml());
+      response.end(
+        hostHtml(
+          searchParams.get("status"),
+          searchParams.get("pointer"),
+          searchParams.has("popovers"),
+        ),
+      );
     } else if (path === "/panel/index.html") {
       response.setHeader("content-type", "text/html");
       response.end(html);
     } else if (path === "/panel/main.js") {
       response.setHeader("content-type", "text/javascript");
       response.end(js);
+    } else if (path === "/panel/status.html" || path === "/panel/status.js") {
+      void readFile(new URL(`..${path}`, import.meta.url)).then(
+        (content) => {
+          response.setHeader(
+            "content-type",
+            path.endsWith(".html") ? "text/html" : "text/javascript",
+          );
+          response.end(content);
+        },
+        () => {
+          response.statusCode = 404;
+          response.end();
+        },
+      );
     } else {
       response.statusCode = 404;
       response.end();
@@ -428,6 +771,2016 @@ async function withPanel(run) {
     const failures = cleanup.filter((result) => result.status === "rejected");
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
   }
+}
+
+for (const popovers of [true, false]) {
+  test(`session section shows the change flyout ${popovers ? "in a host popover" : "inline"}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ hasTouch: popovers });
+      await page.goto(`${url}?status=progress${popovers ? "&popovers&pointer=coarse" : ""}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const name = section.getByRole("button", { name: "first-change", exact: true });
+      const goal = "Read the proposal";
+      if (popovers) {
+        await name.tap({ timeout: 3000 });
+        const flyout = page.frameLocator('iframe[title="OpenSpec test popover"]');
+        await flyout.getByText(goal, { exact: true }).waitFor({ timeout: 3000 });
+        assert.equal(await section.getByText(goal, { exact: true }).count(), 0);
+        assert.equal(await flyout.getByRole("button", { name: "board", exact: true }).count(), 0);
+        await page.evaluate(() => __closePopover("outside"));
+        await page.waitForFunction(
+          () => !document.querySelector('iframe[title="OpenSpec test popover"]'),
+        );
+        await name.tap();
+        await flyout.getByText(goal, { exact: true }).waitFor();
+      } else {
+        await name.click({ timeout: 3000 });
+        await section.getByText(goal, { exact: true }).waitFor({ timeout: 3000 });
+        assert.equal(await page.locator("iframe").count(), 1);
+        await name.click();
+        await section.getByText(goal, { exact: true }).waitFor({ state: "hidden" });
+      }
+    });
+  });
+}
+
+test("session section shows the same shortened 17,000-character goal in either flyout", async () => {
+  await withPanel(async (browser, url) => {
+    for (const popovers of [true, false]) {
+      const page = await browser.newPage({ hasTouch: popovers });
+      await page.goto(`${url}?status=long-goal${popovers ? "&popovers&pointer=coarse" : ""}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const name = section.getByRole("button", { name: "first-change", exact: true });
+      if (popovers) await name.tap({ timeout: 3000 });
+      else await name.click({ timeout: 3000 });
+      const destination = popovers
+        ? page.frameLocator('iframe[title="OpenSpec test popover"]')
+        : section;
+      await destination
+        .getByText(`${"a".repeat(3999)}…`, { exact: true })
+        .waitFor({ timeout: 3000 });
+      await page.close();
+    }
+  });
+});
+
+for (const [stage, chip, count, current, percent] of [
+  ["progress", "apply", "3/7", "2.1 Add a section that tracks a change", 3 / 7],
+  ["complete", "archive", "7/7", "Task 7", 1],
+  ["planning", "propose", "0/0", null, 0],
+]) {
+  test(`session section shows compact cards for ${stage} and ready`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=compact-${stage}`);
+      const frame = page.frameLocator("iframe");
+      const first = frame
+        .getByRole("article")
+        .filter({ has: frame.getByRole("heading", { name: "first-change" }) });
+      const second = frame
+        .getByRole("article")
+        .filter({ has: frame.getByRole("heading", { name: "second-change" }) });
+      const bar = first.getByRole("progressbar", { name: "Task completion" });
+      await bar.waitFor({ timeout: 3000 });
+      assert.equal(await first.getByText(count, { exact: true }).isVisible(), true);
+      assert.equal((await bar.boundingBox()).height, 3);
+      const value = Number(await bar.getAttribute("aria-valuenow"));
+      assert.ok(Math.abs(value / 100 - percent) < 0.001);
+      const details = first.locator("details");
+      assert.equal(await details.isVisible(), current !== null);
+      if (current) {
+        const summary = details.locator("summary");
+        assert.equal(await details.getAttribute("open"), null);
+        assert.equal(await summary.getByText("Tasks:", { exact: true }).isVisible(), true);
+        assert.equal(
+          await summary.getByRole("button", { name: current, exact: true }).isVisible(),
+          true,
+        );
+      }
+      for (const [card, action] of [
+        [first, chip],
+        [second, "apply"],
+      ]) {
+        const names = await card.getByRole("button").allTextContents();
+        assert.deepEqual(
+          names.slice(action === "propose" ? -4 : -3),
+          action === "propose"
+            ? [action, "explore", "sync", "validate"]
+            : [action, "sync", "validate"],
+        );
+      }
+      assert.equal(await second.getByText("0/0", { exact: true }).isVisible(), true);
+      assert.equal(await second.locator("details").isVisible(), false);
+    });
+  });
+}
+
+for (const popovers of [false, true]) {
+  test(`session section offers ordered change actions ${popovers ? "in a popover" : "inline"}`, async () => {
+    await withPanel(async (browser, url) => {
+      for (const [stage, workflows, labels] of [
+        ["planning", ["ff", "continue"], ["continue", "update", "Open in board"]],
+        ["planning", ["ff"], ["update", "Open in board"]],
+        ["progress", ["ff", "continue"], ["update", "Open in board"]],
+      ]) {
+        const page = await browser.newPage({ hasTouch: popovers });
+        await page.goto(
+          `${url}?status=${stage}&hold-ready${popovers ? "&popovers&pointer=coarse" : ""}`,
+        );
+        await page.waitForFunction(() => typeof window.__releaseReady === "function");
+        await page.evaluate((value) => {
+          __workflows(value);
+          __releaseReady();
+        }, workflows);
+        const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+        const name = section.getByRole("button", { name: "first-change", exact: true });
+        if (popovers) await name.tap({ timeout: 3000 });
+        else await name.click({ timeout: 3000 });
+        const flyout = popovers
+          ? page.frameLocator('iframe[title="OpenSpec test popover"]').locator("main")
+          : section.getByText("Read the proposal", { exact: true }).locator("..");
+        const untrack = flyout.getByRole("button", { name: "Untrack", exact: true });
+        await untrack.waitFor({ timeout: 3000 });
+        assert.deepEqual(await flyout.getByRole("button").allTextContents(), [
+          ...labels,
+          "Untrack",
+        ]);
+        const board = flyout.getByRole("button", { name: "Open in board", exact: true });
+        assert.ok(
+          (await untrack.boundingBox()).y >=
+            (await board.boundingBox()).y + (await board.boundingBox()).height,
+        );
+        assert.ok(
+          await untrack.evaluate(
+            (node) =>
+              node.getBoundingClientRect().right ===
+                node.closest(".flyout").querySelector(".card-actions").getBoundingClientRect()
+                  .right &&
+              parseFloat(getComputedStyle(node).fontSize) <
+                parseFloat(getComputedStyle(node.closest(".flyout")).fontSize),
+          ),
+        );
+        await page.close();
+      }
+    });
+  });
+}
+
+for (const action of ["continue", "update", "Open in board"]) {
+  test(`session section closes its host popover after ${action}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ hasTouch: true });
+      await page.goto(`${url}?status=planning&popovers&pointer=coarse&hold-ready&open-board`);
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate(() => {
+        __workflows(["ff", "continue"]);
+        __releaseReady();
+      });
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      await section
+        .getByRole("button", { name: "first-change", exact: true })
+        .tap({ timeout: 3000 });
+      const flyout = page.frameLocator('iframe[title="OpenSpec test popover"]');
+      if (action === "Open in board") await page.evaluate(() => delete window.__releaseReady);
+      await flyout.getByRole("button", { name: action, exact: true }).tap({ timeout: 3000 });
+      await page.waitForFunction(
+        () => {
+          const opened = __requests.find(({ path }) => path === "popover-open");
+          return __requests.some(
+            ({ path, body }) => path === "popover-close" && body.id === opened?.body.id,
+          );
+        },
+        null,
+        { timeout: 3000 },
+      );
+      await page
+        .locator('iframe[title="OpenSpec test popover"]')
+        .waitFor({ state: "detached", timeout: 3000 });
+      if (action === "Open in board") {
+        const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+        await page.waitForFunction(() => typeof window.__releaseReady === "function", null, {
+          timeout: 3000,
+        });
+        await page.evaluate(() => __releaseReady());
+        await board.getByRole("button", { name: "Back to changes" }).waitFor({ timeout: 3000 });
+        await board.getByRole("heading", { name: "first-change", exact: true }).waitFor();
+        assert.deepEqual(
+          await page.evaluate(() =>
+            __requests.filter(({ path }) => path === "/focus" || path === "open-surface"),
+          ),
+          [
+            { path: "/focus", body: { directory, change: "first-change" } },
+            { path: "open-surface", body: { surfaceId: "plugin:openspec-board" } },
+          ],
+        );
+      }
+    });
+  });
+}
+
+for (const [stage, workflows, chips] of [
+  ["planning", null, ["propose", "explore", "sync", "validate"]],
+  ["planning", ["continue"], ["continue", "explore", "sync", "validate"]],
+  ["planning", ["ff"], ["ff", "explore", "sync", "validate"]],
+  ["planning", ["ff", "continue"], ["ff", "explore", "sync", "validate"]],
+  ["progress", [], ["apply", "sync", "validate"]],
+  ["progress", ["ff", "verify"], ["apply", "validate"]],
+  ["complete", [], ["archive", "sync", "validate"]],
+  ["complete", ["verify"], ["archive", "verify", "sync", "validate"]],
+]) {
+  test(`session section selects ${stage} chips: ${chips.join(", ")}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=compact-${stage}&hold-ready`);
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate(
+        ({ workflows, skipSpecs }) => {
+          if (workflows !== null) __workflows(workflows);
+          if (skipSpecs) __specsStatus("skipped");
+          __releaseReady();
+        },
+        { workflows, skipSpecs: !chips.includes("sync") },
+      );
+      const frame = page.frameLocator("iframe");
+      const first = frame
+        .getByRole("article")
+        .filter({ has: frame.getByRole("heading", { name: "first-change" }) });
+      const second = frame
+        .getByRole("article")
+        .filter({ has: frame.getByRole("heading", { name: "second-change" }) });
+      await first.getByRole("button", { name: "validate", exact: true }).waitFor();
+      assert.deepEqual(
+        await first.locator(".card-actions").getByRole("button").allTextContents(),
+        chips,
+      );
+      assert.deepEqual(
+        await second.locator(".card-actions").getByRole("button").allTextContents(),
+        chips.includes("sync") ? ["apply", "sync", "validate"] : ["apply", "validate"],
+      );
+    });
+  });
+}
+
+test("session section preserves a focused chip when configured workflows or stage change", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=compact-planning`);
+    const section = page.frameLocator("iframe");
+    const card = section
+      .getByRole("article")
+      .filter({ has: section.getByRole("heading", { name: "first-change" }) });
+    const primary = card.getByRole("button", { name: "propose", exact: true });
+    await primary.waitFor();
+    await primary.evaluate((node) => {
+      window.__focusedChip = node;
+      node.focus();
+    });
+    await page.evaluate(() => __workflows(["ff"]));
+    await section
+      .locator("footer")
+      .getByRole("button", { name: "Refresh" })
+      .evaluate((node) => node.click());
+    const fastForward = card.getByRole("button", { name: "ff", exact: true });
+    await fastForward.waitFor({ timeout: 3000 });
+    assert.equal(
+      await fastForward.evaluate(
+        (node) => node === window.__focusedChip && node === document.activeElement,
+      ),
+      true,
+    );
+    await page.evaluate(() => {
+      __readiness("");
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+    });
+    const apply = card.getByRole("button", { name: "apply", exact: true });
+    await apply.waitFor({ timeout: 3000 });
+    assert.equal(
+      await apply.evaluate(
+        (node) => node === window.__focusedChip && node === document.activeElement,
+      ),
+      true,
+    );
+    assert.equal(await card.getByRole("button", { name: "explore", exact: true }).count(), 0);
+  });
+});
+
+test("session section expands the task window and opens a full task flyout", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=compact-progress`);
+    const frame = page.frameLocator("iframe");
+    const card = frame
+      .getByRole("article")
+      .filter({ has: frame.getByRole("heading", { name: "first-change" }) });
+    const details = card.locator("details");
+    const current = "2.1 Add a section that tracks a change";
+    const summary = details.locator("summary");
+    await summary.getByRole("button", { name: current, exact: true }).click({ timeout: 3000 });
+    await card
+      .getByText("Keep the whole description readable when expanded.", { exact: false })
+      .waitFor();
+    assert.equal(await details.getAttribute("open"), null);
+    await summary.getByRole("button", { name: current, exact: true }).click();
+    await summary.getByText("Tasks:", { exact: true }).click();
+    const rows = details.getByRole("listitem");
+    assert.deepEqual(await rows.getByRole("button").allTextContents(), [
+      "Task 2",
+      "Task 3",
+      current,
+      "Task 5",
+      "Task 6",
+    ]);
+    const boxes = await rows
+      .getByRole("checkbox")
+      .evaluateAll((nodes) => nodes.map(({ checked, disabled }) => [checked, disabled]));
+    assert.deepEqual(boxes, [
+      [true, true],
+      [true, true],
+      [false, true],
+      [false, true],
+      [false, true],
+    ]);
+    await rows.getByRole("button", { name: "Task 6", exact: true }).click();
+    await rows.last().getByText("Task 6", { exact: true }).last().waitFor();
+  });
+});
+
+test("session section fits a JSON-escaped goal within the popover budget", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ hasTouch: true });
+    await page.goto(`${url}?status=escaped-goal&popovers&pointer=coarse`);
+    const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+    await section.getByRole("button", { name: "first-change", exact: true }).tap({ timeout: 3000 });
+    const flyout = page.frameLocator('iframe[title="OpenSpec test popover"]');
+    await flyout.getByRole("heading", { name: "first-change" }).waitFor({ timeout: 3000 });
+    const data = await page.evaluate(
+      () => __requests.find(({ path }) => path === "popover-open").body.data,
+    );
+    assert.ok(JSON.stringify(data).length <= 15_000);
+    assert.ok(data.goal.length < 4000);
+    assert.match(data.goal, /^\x01+…$/);
+  });
+});
+
+for (const scenario of ["saved", "worktree", "archive", "stale", "legacy-value", "new"]) {
+  test(`session section resolves ${scenario} context without reading the board`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=${scenario}`);
+      const frame = page.frameLocator("iframe");
+      if (scenario === "saved" || scenario === "worktree") {
+        await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor({
+          timeout: 3000,
+        });
+      } else if (scenario === "legacy-value") {
+        await frame.getByRole("heading", { name: "first-change", exact: true }).waitFor({
+          timeout: 3000,
+        });
+        assert.equal(await frame.getByRole("heading", { name: "second-change" }).count(), 0);
+      } else if (scenario === "new") {
+        const track = frame.getByRole("button", { name: "＋ Track a change" });
+        await frame.getByText("Start a session to track a change.").waitFor({ timeout: 3000 });
+        assert.equal(await track.isDisabled(), true);
+      } else {
+        await frame.getByRole("button", { name: "＋ Track a change" }).click({ timeout: 3000 });
+        const option = frame.getByRole("button", { name: "first-change", exact: true });
+        await option.waitFor();
+        assert.equal(await option.isEnabled(), true);
+        if (scenario === "stale")
+          assert.equal(await frame.getByRole("heading", { name: "old-change" }).count(), 0);
+        if (scenario === "archive")
+          assert.equal(
+            await frame.getByRole("button", { name: "archive-all", exact: true }).isVisible(),
+            true,
+          );
+      }
+      await page.waitForFunction(() => __requests.some((r) => r.path === "/changes"));
+      await page.waitForFunction(() =>
+        __requests.some((r) => r.path === "resize" && r.body.height > 0),
+      );
+      assert.equal(
+        await page.evaluate(() => __requests.some((r) => r.path === "/summaries")),
+        false,
+      );
+      await page.close();
+    });
+  });
+}
+
+test("session section isolates a failed card and refreshes each tracked change without a batch read", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=compact-read-error`);
+    const frame = page.frameLocator("iframe");
+    const first = frame
+      .getByRole("article")
+      .filter({ has: frame.getByRole("heading", { name: "first-change" }) });
+    const second = frame
+      .getByRole("article")
+      .filter({ has: frame.getByRole("heading", { name: "second-change" }) });
+    const error = first.getByRole("alert");
+    await error.waitFor({ timeout: 3000 });
+    assert.match(await error.innerText(), /Read failed/);
+    assert.equal(await first.getByRole("progressbar").count(), 0);
+    assert.equal(await first.getByText("3/7", { exact: true }).count(), 0);
+    assert.equal(await second.getByText("0/0", { exact: true }).isVisible(), true);
+    const before = await page.evaluate(() =>
+      __requests
+        .filter(
+          ({ path }) =>
+            path === "/changes" ||
+            path === "/workflows" ||
+            path === "/summary" ||
+            path === "/tasks" ||
+            path === "/summaries",
+        )
+        .map(({ path, body }) => (body.change ? `${path} ${body.change}` : path)),
+    );
+    const expected = [
+      "/changes",
+      "/workflows",
+      "/summary first-change",
+      "/summary second-change",
+      "/tasks first-change",
+      "/tasks second-change",
+    ];
+    assert.deepEqual(before.slice().sort(), expected.slice().sort());
+    await first.getByRole("button", { name: "Refresh", exact: true }).click();
+    await first.getByText("3/7", { exact: true }).waitFor();
+    assert.equal(await error.count(), 0);
+    const after = await page.evaluate(() =>
+      __requests
+        .filter(
+          ({ path }) =>
+            path === "/changes" ||
+            path === "/workflows" ||
+            path === "/summary" ||
+            path === "/tasks" ||
+            path === "/summaries",
+        )
+        .map(({ path, body }) => (body.change ? `${path} ${body.change}` : path)),
+    );
+    assert.deepEqual(after.slice(before.length).sort(), expected.slice().sort());
+    await page.close();
+  });
+});
+
+for (const surface of ["section", "board"]) {
+  test(`unready session coverage prevents the ${surface} from replacing a derived change`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=unready-tracking`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const track = section.getByRole("button", { name: "＋ Track a change" });
+      await track.waitFor();
+      const warned = page.waitForEvent("console", {
+        predicate: (message) =>
+          message.type() === "warning" && /tracked OpenSpec/.test(message.text()),
+        timeout: 5000,
+      });
+      if (surface === "section") {
+        await track.click();
+        await section
+          .getByRole("list", { name: "Changes" })
+          .getByRole("button", { name: "second-change" })
+          .click();
+      } else {
+        await page.evaluate(() => __mountBoard());
+        const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+        await board
+          .locator(".change-card")
+          .filter({ hasText: "second-change" })
+          .getByRole("button", { name: "apply", exact: true })
+          .click();
+        await board.getByRole("menuitem", { name: "Prepare in current chat" }).click();
+        await page.waitForFunction(() =>
+          __requests.some(({ path, body }) => path === "toast" && body.kind === "success"),
+        );
+        assert.match(
+          await page.evaluate(() => __draft()),
+          /openspec-apply-change.*"second-change"/,
+        );
+      }
+      await warned;
+      if (surface === "section")
+        await page.waitForFunction(() =>
+          __requests.some(
+            ({ path, body }) =>
+              path === "toast" && body.kind === "error" && /try again/i.test(body.message),
+          ),
+        );
+      assert.deepEqual(await page.evaluate(() => __stored()), {});
+    });
+  });
+}
+
+test("session section orders the picker by task counts and persists a choice", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=picker`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("button", { name: "＋ Track a change" }).click({ timeout: 3000 });
+    const list = frame.getByRole("list", { name: "Changes", exact: true });
+    const choices = list.getByRole("button");
+    await choices.first().waitFor();
+    assert.deepEqual(
+      (await choices.allTextContents()).map((text) => text.trim()),
+      [
+        "z-progress-change",
+        "first-change",
+        "not-started-change",
+        "second-change",
+        "complete-change",
+      ],
+    );
+    await list.getByRole("button", { name: "first-change", exact: true }).click();
+    await frame
+      .getByRole("heading", { name: "first-change", exact: true })
+      .waitFor({ timeout: 3000 });
+    await page.waitForFunction(
+      () => __stored()["session-change:fixture-session"]?.changes?.join() === "first-change",
+    );
+    await frame.getByRole("button", { name: "＋ Track a change", exact: true }).click();
+    assert.equal(await list.getByRole("button", { name: "first-change", exact: true }).count(), 0);
+    await list.getByRole("button", { name: "second-change", exact: true }).click();
+    await frame.getByRole("heading", { name: "first-change", exact: true }).waitFor();
+    await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor();
+    await page.waitForFunction(
+      () =>
+        __stored()["session-change:fixture-session"]?.changes?.join() ===
+        "first-change,second-change",
+    );
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "/tasks" && r.body.change === "second-change"),
+    );
+    assert.equal(await page.evaluate(() => __requests.some((r) => r.path === "/summaries")), false);
+    await page.close();
+  });
+});
+
+test("session tracking seeds a worktree's derived change and untracking all keeps it hidden", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ hasTouch: true });
+    await page.goto(`${url}?status=worktree&popovers&pointer=coarse`);
+    const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+    const flyout = page.frameLocator('iframe[title="OpenSpec test popover"]');
+    const track = section.getByRole("button", { name: "＋ Track a change" });
+    await track.tap({ timeout: 3000 });
+    await section
+      .getByRole("list", { name: "Changes" })
+      .getByRole("button", { name: "first-change" })
+      .tap();
+    for (const name of ["second-change", "first-change"]) {
+      await section.getByRole("heading", { name, exact: true }).waitFor();
+    }
+    assert.deepEqual(
+      await page.evaluate(() => __stored()["session-change:fixture-session"].changes),
+      ["second-change", "first-change"],
+    );
+    for (const name of ["first-change", "second-change"]) {
+      const control = section.getByRole("button", { name, exact: true });
+      await control.tap();
+      await flyout.getByRole("button", { name: "Untrack" }).tap();
+      await control.waitFor({ state: "hidden" });
+    }
+    assert.deepEqual(
+      await page.evaluate(() => __stored()["session-change:fixture-session"].changes),
+      [],
+    );
+    await section.getByRole("button", { name: "Refresh" }).tap();
+    await page.waitForFunction(
+      () => __completed.filter((path) => path === "/changes").length === 5,
+    );
+    await page.evaluate(() => __theme("light"));
+    await section.locator('html[data-oc-theme="light"]').waitFor();
+    assert.equal(await section.getByRole("heading").count(), 0);
+  });
+});
+
+for (const [width, pointer, scenario] of [
+  [720, "fine", "item"],
+  [320, "coarse", "item"],
+  [320, "coarse", "picker"],
+]) {
+  test(`session picker grows the ${width}px ${pointer} frame from ${scenario} context`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ viewport: { width, height: 720 } });
+      await page.goto(`${url}?status=${scenario}&pointer=${pointer}`);
+      const frame = page.frameLocator("iframe");
+      const trigger = frame.getByRole("button", {
+        name: "＋ Track a change",
+        exact: true,
+      });
+      const list = frame.getByRole("list", { name: "Changes", exact: true });
+      await trigger.and(frame.locator("button:enabled")).waitFor({ timeout: 3000 });
+      await page.waitForFunction(() => {
+        const frame = document.querySelector("iframe");
+        const resize = __requests.findLast((r) => r.path === "resize");
+        return (
+          resize?.body.height ===
+          Math.ceil(frame.contentDocument.querySelector("#root").getBoundingClientRect().height)
+        );
+      });
+      const closedHeight = await page.locator("iframe").evaluate((node) => node.clientHeight);
+
+      await trigger.press("Enter");
+      await frame.getByText("second-change", { exact: true }).waitFor();
+      await page
+        .waitForFunction(
+          (height) => __requests.findLast((r) => r.path === "resize")?.body.height > height,
+          closedHeight,
+          { timeout: 2000 },
+        )
+        .catch(() => assert.fail(`Opening the picker did not grow the ${closedHeight}px frame`));
+      const reportedHeight = await page.evaluate(
+        () => __requests.findLast((r) => r.path === "resize").body.height,
+      );
+      assert.equal(
+        await page.locator("iframe").evaluate((node) => node.clientHeight),
+        reportedHeight,
+      );
+      const options = list.getByRole("button");
+      assert.equal(await options.count(), scenario === "item" ? 1 : 5);
+      const boxes = await options.evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const { top, right, bottom, left, height } = button.getBoundingClientRect();
+          return { top, right, bottom, left, height, position: getComputedStyle(button).position };
+        }),
+      );
+      for (const box of boxes) {
+        assert.ok(box.top >= 0 && box.bottom <= reportedHeight);
+        assert.ok(box.left >= 0 && box.right <= width);
+        assert.ok(box.position === "static" || box.position === "relative");
+        if (pointer === "coarse") assert.ok(box.height >= 44);
+      }
+      assert.equal(await options.first().evaluate((node) => node === document.activeElement), true);
+      await options.first().press("Escape");
+      await options.first().waitFor({ state: "hidden" });
+      assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+      await page.waitForFunction(
+        (height) => __requests.findLast((r) => r.path === "resize")?.body.height === height,
+        closedHeight,
+      );
+
+      await trigger.press("Enter");
+      const cancel = frame.getByRole("button", { name: "Cancel", exact: true });
+      if (scenario === "item") {
+        await cancel.click();
+        assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+        await trigger.press("Enter");
+      } else assert.equal(await cancel.count(), 0);
+      await list.getByRole("button", { name: "second-change", exact: true }).press("Enter");
+      await page.waitForFunction(
+        (expected) => __stored()["session-change:fixture-session"]?.changes?.join() === expected,
+        scenario === "item" ? "first-change,second-change" : "second-change",
+      );
+      await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor();
+      assert.equal(
+        await frame
+          .getByRole("button", { name: "＋ Track a change", exact: true })
+          .evaluate((node) => node === document.activeElement),
+        true,
+      );
+      await page.close();
+    });
+  });
+}
+
+for (const [stage, chip, skill] of [
+  ["progress", "apply", "openspec-apply-change"],
+  ["planning", "propose", "openspec-propose"],
+  ["complete", "archive", "openspec-archive-change"],
+  ["progress", "sync", "openspec-sync-specs"],
+]) {
+  test(`session section ${chip} prepares the unsent workflow draft and tracks its change`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=compact-${stage}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const card = section
+        .getByRole("article")
+        .filter({ has: section.getByRole("heading", { name: "first-change" }) });
+      await card.getByRole("button", { name: chip, exact: true }).waitFor();
+      await page.evaluate(() =>
+        __seedStorage([
+          [
+            "session-change:fixture-session",
+            {
+              changes: ["second-change"],
+              savedAt: 1,
+            },
+          ],
+        ]),
+      );
+      let expected;
+      if (chip === "sync") {
+        expected =
+          /^Use your skill tool to load and invoke the openspec-sync-specs skill for OpenSpec change "first-change"\.\s+.*report what.*synced.*without archiving/is;
+      } else {
+        await page.evaluate(() => __mountBoard());
+        const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+        const boardCard = board.locator(".change-card").filter({ hasText: "first-change" });
+        const action = boardCard.getByRole("button", { name: chip, exact: true });
+        await action.click({ timeout: 3000 });
+        if (chip === "apply")
+          await board
+            .getByRole("menuitem", { name: "Prepare in current chat", exact: true })
+            .click();
+        await page.waitForFunction((skill) => __draft().includes(skill), skill);
+        expected = await page.evaluate(() => __draft());
+        await page.waitForFunction(
+          () => __stored()["session-change:fixture-session"]?.changes?.length === 2,
+        );
+        await page.evaluate(() =>
+          __seedStorage([
+            ["session-change:fixture-session", { changes: ["second-change"], savedAt: 1 }],
+          ]),
+        );
+      }
+      await card.getByRole("button", { name: chip, exact: true }).click({ timeout: 3000 });
+      await page.waitForFunction(
+        () =>
+          __stored()["session-change:fixture-session"]?.changes?.join() ===
+          "second-change,first-change",
+        null,
+        { timeout: 3000 },
+      );
+      const draft = await page.evaluate(() => __draft());
+      if (expected instanceof RegExp) assert.match(draft, expected);
+      else assert.equal(draft, expected);
+      assert.equal(
+        await page.evaluate(() =>
+          __requests.some(({ path }) => path === "prompt" || path === "start-session"),
+        ),
+        false,
+      );
+    });
+  });
+}
+
+for (const [action, stage, workflows, surface, skill, instruction] of [
+  [
+    "ff",
+    "planning",
+    ["ff"],
+    "card",
+    "openspec-ff-change",
+    /Create every remaining planning artefact/,
+  ],
+  [
+    "continue",
+    "planning",
+    ["continue"],
+    "card",
+    "openspec-continue-change",
+    /Write the next planning artefact/,
+  ],
+  [
+    "continue",
+    "planning",
+    ["ff", "continue"],
+    "popover",
+    "openspec-continue-change",
+    /Write the next planning artefact/,
+  ],
+  [
+    "update",
+    "progress",
+    [],
+    "popover",
+    "openspec-update-change",
+    /Revise .* existing planning artefacts/,
+  ],
+  ["explore", "planning", [], "card", "openspec-explore", /Investigate the goal/],
+  ["verify", "complete", ["verify"], "card", "openspec-verify-change", null],
+  [
+    "new",
+    "progress",
+    ["new"],
+    "footer",
+    "openspec-new-change",
+    /Ask me what the change is for before creating it/,
+  ],
+]) {
+  test(`session section prepares an unsent ${action} prompt from the ${surface}`, async () => {
+    await withPanel(async (browser, url) => {
+      const popover = surface === "popover";
+      const page = await browser.newPage({ hasTouch: popover });
+      await page.goto(
+        `${url}?status=${stage}&hold-ready${popover ? "&popovers&pointer=coarse" : ""}`,
+      );
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate((configured) => {
+        __workflows(configured);
+        __releaseReady();
+      }, workflows);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const first = section.getByRole("button", { name: "first-change", exact: true });
+      await first.waitFor({ timeout: 3000 });
+      await page.evaluate(() =>
+        __seedStorage([
+          ["session-change:fixture-session", { changes: ["second-change"], savedAt: 1 }],
+        ]),
+      );
+      let controls =
+        surface === "footer" ? section.locator("footer") : section.getByRole("article");
+      if (popover) {
+        await first.tap();
+        controls = page.frameLocator('iframe[title="OpenSpec test popover"]').locator("main");
+      }
+      await controls.getByRole("button", { name: action, exact: true }).click({ timeout: 3000 });
+      await page.waitForFunction((name) => __draft().includes(name), skill, { timeout: 3000 });
+      if (action !== "new") {
+        await page.waitForFunction(
+          () =>
+            __stored()["session-change:fixture-session"]?.changes.join() ===
+            "second-change,first-change",
+          null,
+          { timeout: 3000 },
+        );
+      }
+      await page.waitForFunction(() =>
+        __requests.some(({ path, body }) => path === "toast" && body.kind === "success"),
+      );
+      const text = await page.evaluate(() => __draft());
+      assert.match(text, /^Use your skill tool to load and invoke the /);
+      assert.doesNotMatch(text, /\/tmp\/|openspec\/changes\//);
+      const target = 'OpenSpec change "first-change"';
+      if (action === "new") {
+        assert.doesNotMatch(text, /\b(?:first|second)-change\b/);
+        assert.deepEqual(await page.evaluate(() => __stored()["session-change:fixture-session"]), {
+          changes: ["second-change"],
+          savedAt: 1,
+        });
+      } else {
+        assert.ok(text.includes(target));
+        if (action === "verify")
+          assert.equal(
+            text,
+            `Use your skill tool to load and invoke the openspec-verify-change skill for ${target}.`,
+          );
+        else assert.match(text, /Goal: Read the proposal/);
+      }
+      if (instruction) assert.match(text, instruction);
+      assert.deepEqual(
+        await page.evaluate(() =>
+          __requests.filter(({ path }) => ["compose", "prompt", "start-session"].includes(path)),
+        ),
+        [{ path: "compose", body: { text, mode: "replace" } }],
+      );
+      await page.close();
+    });
+  });
+}
+
+test("session section discards late composition feedback and saving after a session switch", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item`);
+    const frame = page.frameLocator("iframe");
+    await page.evaluate(() => __holdCompose());
+    await frame.getByRole("button", { name: "apply", exact: true }).click({ timeout: 3000 });
+    await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+    await page.evaluate(() => __session("replacement-session"));
+    await frame.getByRole("button", { name: "＋ Track a change" }).waitFor();
+    await page.evaluate(() => {
+      __releaseCompose();
+      __theme("light");
+    });
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    assert.deepEqual(await page.evaluate(() => __stored()), {});
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests
+          .filter((r) => ["compose", "toast", "prompt", "start-session"].includes(r.path))
+          .map((r) => r.path),
+      ),
+      ["compose"],
+    );
+    await page.close();
+  });
+});
+
+for (const mode of ["mounted", "later", "other-directory"]) {
+  test(`session section board focus is claimed once by the ${mode} board`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=item${mode === "later" ? "&open-board" : ""}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+      await section.getByRole("button", { name: "first-change", exact: true }).click();
+      const openInBoard = section.getByRole("button", { name: "Open in board", exact: true });
+      await openInBoard.waitFor();
+      if (mode !== "later") {
+        await page.evaluate(
+          (target) => __mountBoard(target),
+          mode === "mounted" ? directory : "/tmp/other-project",
+        );
+        await page.waitForFunction(() => __focusClaims.length === 1, null, { timeout: 3000 });
+      }
+      await openInBoard.click();
+      await page.waitForFunction(
+        () => __requests.some(({ path }) => path === "open-surface"),
+        null,
+        { timeout: 3000 },
+      );
+      assert.deepEqual(
+        await page.evaluate(() =>
+          __requests.filter(({ path }) => path === "/focus" || path === "open-surface"),
+        ),
+        [
+          { path: "/focus", body: { directory, change: "first-change" } },
+          { path: "open-surface", body: { surfaceId: "plugin:openspec-board" } },
+        ],
+      );
+      if (mode === "other-directory") {
+        await page.waitForFunction(() => __focusClaims.length === 2, null, { timeout: 3000 });
+        await page.evaluate(() => __theme("light"));
+        await board.locator('html[data-oc-theme="light"]').waitFor();
+        assert.equal(await board.getByRole("button", { name: "Back to changes" }).count(), 0);
+        await page.evaluate(() => __mountBoard());
+      }
+      const back = board.getByRole("button", { name: "Back to changes" });
+      await back.waitFor({ timeout: 3000 });
+      await board.getByRole("heading", { name: "first-change" }).waitFor();
+      assert.equal(
+        await page.evaluate(() => __requests.filter(({ path }) => path === "/changes").length),
+        mode === "other-directory" ? 3 : 2,
+      );
+      await page.evaluate(() => __mountBoard());
+      await board.getByRole("button", { name: "first-change", exact: true }).waitFor();
+      const expectedClaims = mode === "later" ? 2 : mode === "mounted" ? 3 : 4;
+      await page.waitForFunction((count) => __focusClaims.length === count, expectedClaims);
+      const nextTheme = mode === "other-directory" ? "dark" : "light";
+      await page.evaluate((theme) => __theme(theme), nextTheme);
+      await board.locator(`html[data-oc-theme="${nextTheme}"]`).waitFor();
+      assert.equal(await back.count(), 0);
+    });
+  });
+}
+
+for (const exists of [true, false]) {
+  test(`board focus reloads an unlisted change once when it ${exists ? "appears" : "stays missing"}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=item`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+      await section.getByRole("button", { name: "first-change", exact: true }).click();
+      const openInBoard = section.getByRole("button", { name: "Open in board", exact: true });
+      await openInBoard.waitFor();
+      await page.evaluate(() => {
+        __remove("first-change");
+        __mountBoard();
+      });
+      const other = board.getByRole("button", { name: "second-change", exact: true });
+      await other.waitFor();
+      if (exists) await page.evaluate(() => __recreate("first-change"));
+      else {
+        await other.click();
+        await board.getByRole("button", { name: "Back to changes" }).waitFor();
+      }
+      await openInBoard.click();
+      if (exists) {
+        await board
+          .getByRole("heading", { name: "first-change", exact: true })
+          .waitFor({ timeout: 3000 });
+      } else {
+        await page.waitForFunction(
+          () =>
+            __requests.some(
+              ({ path, body }) =>
+                path === "toast" && body.message === "first-change isn't in this board's list.",
+            ),
+          null,
+          { timeout: 3000 },
+        );
+        await other.waitFor();
+      }
+      assert.equal(
+        await page.evaluate(() => __requests.filter(({ path }) => path === "/changes").length),
+        3,
+      );
+      assert.equal(
+        await page.evaluate(() => __requests.filter(({ path }) => path === "/workflows").length),
+        2,
+      );
+    });
+  });
+}
+
+test("a hidden board does not claim a focus event but a new board still claims on mount", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item`);
+    const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+    const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+    await section.getByRole("button", { name: "first-change", exact: true }).click();
+    const openInBoard = section.getByRole("button", { name: "Open in board", exact: true });
+    await openInBoard.waitFor();
+    await page.evaluate(() => __mountBoard());
+    await page.waitForFunction(() => __focusClaims.length === 1);
+    const change = board.getByRole("button", { name: "first-change", exact: true });
+    await change.evaluate(() =>
+      Object.defineProperty(document, "visibilityState", { value: "hidden" }),
+    );
+    await openInBoard.click();
+    await page.waitForFunction(() => __requests.some(({ path }) => path === "open-surface"));
+    await page.evaluate(() => __theme("light"));
+    await board.locator('html[data-oc-theme="light"]').waitFor();
+    assert.equal(await page.evaluate(() => __focusClaims.length), 1);
+    await page.evaluate(() => __mountBoard());
+    await board
+      .getByRole("heading", { name: "first-change", exact: true })
+      .waitFor({ timeout: 3000 });
+    assert.equal(await page.evaluate(() => __focusClaims.length), 2);
+  });
+});
+
+test("session section validation opens a flyout only when a validation chip is activated", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ hasTouch: true });
+    await page.goto(`${url}?status=compact-progress&popovers&pointer=coarse`);
+    const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+    const flyout = page.frameLocator('iframe[title="OpenSpec test popover"]');
+    for (const [change, valid] of [
+      ["first-change", true],
+      ["second-change", false],
+    ]) {
+      const card = section
+        .getByRole("article")
+        .filter({ has: section.getByRole("heading", { name: change }) });
+      const chip = card.getByRole("button", { name: "validate" });
+      await chip.waitFor();
+      assert.equal(
+        await page.evaluate(
+          (name) =>
+            __requests.some(({ path, body }) => path === "/validate" && body.change === name),
+          change,
+        ),
+        false,
+      );
+      await chip.tap({ timeout: 3000 });
+      await flyout
+        .getByText(valid ? "Valid · 0 issues" : "Invalid · 23 issues", { exact: true })
+        .waitFor({ timeout: 3000 });
+      if (!valid) {
+        const issues = flyout.getByRole("listitem");
+        assert.equal(await issues.count(), 20);
+        assert.match(await issues.first().innerText(), /ERROR.*specs\/0.*Issue 0 x+…/s);
+        assert.equal((await issues.first().locator("p").innerText()).length, 300);
+        await flyout
+          .getByText("+3 more issues: open the board or run openspec validate", { exact: true })
+          .waitFor();
+      }
+      const request = await page.evaluate(
+        () => __requests.filter(({ path }) => path === "/validate").at(-1).body,
+      );
+      assert.deepEqual(request, {
+        directory,
+        expectedRoot: root,
+        planning: "fixture-planning",
+        change,
+      });
+      await page.evaluate(() => __closePopover("outside"));
+    }
+  });
+});
+
+for (const failure of ["no geometry", "host rejection"]) {
+  test(`validation cannot reopen a stale result after ${failure}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=item&popovers`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const chip = section.getByRole("button", { name: "validate" });
+      if (failure === "no geometry") await page.evaluate(() => __holdValidation());
+      else await page.evaluate(() => __rejectNextPopover());
+      await chip.click();
+      await page.waitForFunction(() => __requests.some(({ path }) => path === "/validate"));
+      if (failure === "no geometry") {
+        await chip.evaluate((button) => {
+          button.style.display = "none";
+        });
+        await page.evaluate(() => __releaseValidation());
+      } else {
+        await page.waitForFunction(() => __requests.some(({ path }) => path === "popover-close"));
+      }
+      await page.evaluate(() => __theme("light"));
+      await section.locator('html[data-oc-theme="light"]').waitFor();
+      await section
+        .locator("button")
+        .filter({ hasText: "validate" })
+        .evaluate((button) => {
+          button.style.removeProperty("display");
+        });
+      await chip.press("ArrowRight");
+      await page.evaluate(() => __theme("dark"));
+      await section.locator('html[data-oc-theme="dark"]').waitFor();
+      const attempts = failure === "no geometry" ? 0 : 1;
+      assert.equal(
+        await page.evaluate(() => __requests.filter(({ path }) => path === "popover-open").length),
+        attempts,
+      );
+      await chip.click();
+      await page
+        .frameLocator('iframe[title="OpenSpec test popover"]')
+        .getByText("Valid · 0 issues")
+        .waitFor({ timeout: 3000 });
+      assert.equal(
+        await page.evaluate(() => __requests.filter(({ path }) => path === "/validate").length),
+        2,
+      );
+    });
+  });
+}
+
+for (const popovers of [false, true]) {
+  test(`validation distinguishes notes from warnings and real locations in the ${popovers ? "popover" : "inline result"}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ hasTouch: popovers });
+      await page.goto(`${url}?status=item${popovers ? "&popovers&pointer=coarse" : ""}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const result = popovers
+        ? page.frameLocator('iframe[title="OpenSpec test popover"]')
+        : section;
+      const chip = section.getByRole("button", { name: "validate" });
+      await chip.waitFor();
+      await page.evaluate(() =>
+        __validation({
+          valid: true,
+          issues: [
+            {
+              level: "INFO",
+              path: "file",
+              message: "skip_specs is set in .openspec.yaml: zero deltas accepted",
+            },
+            { level: "WARNING", path: "specs/example/spec.md", message: "Check this requirement." },
+            { level: "WARNING", path: "file", message: "Check the change." },
+          ],
+        }),
+      );
+      if (popovers) await chip.tap({ timeout: 3000 });
+      else await chip.click({ timeout: 3000 });
+      const note = result.getByText(
+        "Note: skip_specs is set in .openspec.yaml: zero deltas accepted",
+        {
+          exact: true,
+        },
+      );
+      await note.waitFor({ timeout: 3000 });
+      assert.equal(
+        await note.evaluate((node) => {
+          const probe = document.createElement("span");
+          probe.style.color = "var(--oc-muted)";
+          node.append(probe);
+          const muted = getComputedStyle(probe).color;
+          probe.remove();
+          return getComputedStyle(node).color === muted;
+        }),
+        true,
+      );
+      await result.getByText("Valid · 2 issues", { exact: true }).waitFor();
+      const issues = result.getByRole("listitem");
+      assert.equal(await issues.count(), 2);
+      assert.match(
+        await issues.first().innerText(),
+        /WARNING · specs\/example\/spec\.md.*Check this requirement\./s,
+      );
+      assert.equal(await issues.last().getByText("WARNING", { exact: true }).count(), 1);
+    });
+  });
+
+  test(`a repeat validate click reruns validation while its ${popovers ? "popover" : "inline result"} is open`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ hasTouch: popovers });
+      await page.goto(`${url}?status=item${popovers ? "&popovers&pointer=coarse" : ""}`);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const chip = section.getByRole("button", { name: "validate" });
+      const result = popovers
+        ? page.frameLocator('iframe[title="OpenSpec test popover"]')
+        : section;
+      if (popovers) await chip.tap();
+      else await chip.click();
+      await result.getByText("Valid · 0 issues").waitFor();
+      if (popovers) await chip.tap();
+      else await chip.click();
+      await page.waitForFunction(
+        () => __requests.filter(({ path }) => path === "/validate").length === 2,
+        null,
+        { timeout: 3000 },
+      );
+      await result.getByText("Valid · 0 issues").waitFor();
+    });
+  });
+}
+
+test("session section omits additional validation issues to fit JSON-escaped messages", async () => {
+  await withPanel(async (browser, url) => {
+    for (const popovers of [true, false]) {
+      const page = await browser.newPage({ hasTouch: popovers });
+      await page.goto(
+        `${url}?status=compact-validation-budget${popovers ? "&popovers&pointer=coarse" : ""}`,
+      );
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const card = section
+        .getByRole("article")
+        .filter({ has: section.getByRole("heading", { name: "second-change" }) });
+      const chip = card.getByRole("button", { name: "validate" });
+      if (popovers) await chip.tap({ timeout: 3000 });
+      else await chip.click({ timeout: 3000 });
+      const flyout = popovers ? page.frameLocator('iframe[title="OpenSpec test popover"]') : card;
+      await flyout.getByText("Invalid · 23 issues", { exact: true }).waitFor({ timeout: 3000 });
+      await flyout
+        .getByText("Note: This note does not affect validation.", { exact: true })
+        .waitFor();
+      const count = await flyout.getByRole("listitem").count();
+      assert.ok(count > 0 && count < 20);
+      await flyout
+        .getByText(`+${23 - count} more issues: open the board or run openspec validate`, {
+          exact: true,
+        })
+        .waitFor();
+      if (popovers) {
+        const data = await page.evaluate(
+          () => __requests.find(({ path }) => path === "popover-open").body.data,
+        );
+        assert.ok(JSON.stringify(data).length <= 15_000);
+      }
+      await page.close();
+    }
+  });
+});
+
+test("Work Status coalesces a completed lifecycle event with its mount-time context", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=mount-burst&hold-ready`);
+    const frame = page.frameLocator("iframe");
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate(() => {
+      __holdListing();
+      __releaseReady();
+      __lifecycle("fixture-session", "completed");
+    });
+    await page.waitForFunction(() => __requests.some(({ path }) => path === "/changes"));
+    await page.evaluate(() => __releaseListing());
+    await frame.getByText("1/2", { exact: true }).waitFor();
+    await page.evaluate(() => __theme("light"));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter(({ path }) => path === "/changes").length),
+      1,
+    );
+  });
+});
+
+for (const remount of [false, true]) {
+  test(`Work Status restores display-only progress after a ${remount ? "frame remount" : "session switch"}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=switch${remount ? "&device-storage" : ""}`);
+      const frame = page.frameLocator("iframe");
+      await frame.getByText("1/2", { exact: true }).waitFor();
+      if (remount) {
+        await page.waitForFunction(() => Object.keys(__deviceStored()).length > 0, null, {
+          timeout: 3000,
+        });
+        const stored = await page.evaluate(() => JSON.stringify(__deviceStored()));
+        assert.match(stored, /fixture-session.*first-change.*Second description/s);
+        assert.doesNotMatch(stored, /Read the proposal|CLI description|openspec-apply-change/);
+      } else {
+        await page.evaluate(() => __session("replacement-session"));
+        await frame.getByRole("heading", { name: "second-change" }).waitFor();
+      }
+      await page.evaluate((remount) => {
+        __holdListing();
+        __edit("Done");
+        if (remount) __remountStatus();
+        else __session("fixture-session");
+      }, remount);
+      const refresh = frame.getByRole("status").filter({ hasText: "Showing last known progress" });
+      await refresh.waitFor({ timeout: 3000 });
+      await frame.getByText("Second description", { exact: true }).waitFor();
+      assert.equal(await frame.getByText("1/2", { exact: true }).isVisible(), true);
+      assert.equal(await frame.getByRole("heading", { name: "second-change" }).count(), 0);
+      assert.equal(await frame.getByRole("button", { name: "apply", exact: true }).count(), 0);
+      await page.waitForFunction(
+        (count) => __requests.filter(({ path }) => path === "/changes").length === count,
+        remount ? 2 : 3,
+      );
+      await page.evaluate(() => __releaseListing());
+      await frame.getByText("2/2", { exact: true }).waitFor();
+      await refresh.waitFor({ state: "hidden" });
+    });
+  });
+}
+
+test("Work Status keeps the last known progress when refreshing the listing fails", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByText("1/2", { exact: true }).waitFor();
+    await page.evaluate(() => __failNextListing());
+    await frame.getByRole("button", { name: "Refresh", exact: true }).click();
+    await frame.getByRole("alert").filter({ hasText: "Cannot check listing" }).waitFor();
+    assert.equal(await frame.getByText("1/2", { exact: true }).isVisible(), true);
+    assert.equal(await frame.getByRole("button", { name: "apply", exact: true }).count(), 0);
+  });
+});
+
+test("the Work Status device cache retains at most 50 sessions", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item&device-storage&hold-ready`);
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate((directory) => {
+      __seedDeviceStorage([
+        [
+          "work-status:cards",
+          Array.from({ length: 50 }, (_, index) => ({
+            sessionId: "cached-session-" + index,
+            directory,
+            cards: [],
+          })),
+        ],
+      ]);
+      __releaseReady();
+    }, directory);
+    await page.waitForFunction(
+      () =>
+        __deviceStored()["work-status:cards"].some(
+          ({ sessionId }) => sessionId === "fixture-session",
+        ),
+      null,
+      { timeout: 3000 },
+    );
+    const sessions = await page.evaluate(() =>
+      __deviceStored()["work-status:cards"].map(({ sessionId }) => sessionId),
+    );
+    assert.equal(sessions.length, 50);
+    assert.equal(sessions.includes("cached-session-0"), false);
+    assert.equal(sessions.at(-1), "fixture-session");
+  });
+});
+
+test("session section reads configured workflows on mount, Refresh and directory change", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByText("1/2", { exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __completed.filter((p) => p === "/workflows").length),
+      1,
+    );
+    await page.evaluate(() => __edit("Completed"));
+    await frame.getByRole("button", { name: "Refresh", exact: true }).click();
+    await frame.getByText("2/2", { exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __completed.filter((p) => p === "/workflows").length),
+      2,
+    );
+    await page.evaluate(() => __directory("/tmp/workflows-other-project"));
+    await frame.getByText("No active changes.", { exact: true }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter(({ path }) => path === "/workflows").map(({ body }) => body),
+      ),
+      [{ directory }, { directory }, { directory: "/tmp/workflows-other-project" }],
+    );
+    await page.close();
+  });
+});
+
+test("session section falls back to core workflows without showing the config error", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=planning&hold-ready`);
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate(() => {
+      __workflows(null);
+      __releaseReady();
+    });
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("button", { name: "propose", exact: true }).waitFor();
+    assert.equal(await frame.getByRole("alert").count(), 0);
+    assert.equal(
+      await page.evaluate(() => __completed.filter((p) => p === "/workflows").length),
+      1,
+    );
+    await page.close();
+  });
+});
+
+test("session section refreshes once for a completed turn in the shown session only", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=progress`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByText("3/7", { exact: true }).waitFor();
+    await page.evaluate(() => {
+      __lifecycle("other-session", "completed");
+      __lifecycle("fixture-session", "started");
+      __theme("light");
+    });
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length === 1);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/changes").length),
+      1,
+    );
+    await page.evaluate(() => {
+      __edit("More tasks complete");
+      __lifecycle("fixture-session", "completed");
+    });
+    await frame.getByText("4/7", { exact: true }).waitFor({ timeout: 3000 });
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length === 2);
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests
+          .filter((r) =>
+            ["/changes", "/workflows", "/summary", "/tasks", "/summaries"].includes(r.path),
+          )
+          .map((r) => r.path),
+      ),
+      ["/changes", "/workflows", "/summary", "/tasks", "/changes", "/summary", "/tasks"],
+    );
+    await page.close();
+  });
+});
+
+test("session section reads once on an idle session switch, then once for a finished turn", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=switch`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByText("1/2", { exact: true }).waitFor();
+    await page.evaluate(() => {
+      __session("replacement-session");
+      __theme("light");
+    });
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length >= 2);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/changes").length),
+      2,
+    );
+    await page.evaluate(() => {
+      __lifecycle("replacement-session", "started");
+      __lifecycle("replacement-session", "completed");
+      __theme("dark");
+    });
+    await frame.locator('html[data-oc-theme="dark"]').waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length >= 3);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/changes").length),
+      3,
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/workflows").length),
+      1,
+    );
+    await page.close();
+  });
+});
+
+test("session section preserves an open disclosure, focus, flyout and picker across finished-turn reads", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=compact-progress`);
+    const frame = page.frameLocator("iframe");
+    const first = frame
+      .getByRole("article")
+      .filter({ has: frame.getByRole("heading", { name: "first-change" }) });
+    const detail = first.locator("details");
+    await detail.locator("summary").getByText("Tasks:", { exact: true }).click();
+    const task = detail.getByRole("button", { name: "Task 5", exact: true });
+    await task.click();
+    await detail.getByText("Task 5", { exact: true }).last().waitFor({ timeout: 3000 });
+    await page.evaluate(() => {
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+    });
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length === 4);
+    await page.evaluate(() => __theme("light"));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    assert.notEqual(await detail.getAttribute("open"), null);
+    assert.equal(await task.evaluate((node) => document.activeElement === node), true);
+    assert.equal(await task.getAttribute("aria-expanded"), "true");
+
+    await frame.getByRole("button", { name: "＋ Track a change", exact: true }).click();
+    const picker = frame.getByRole("list", { name: "Changes", exact: true });
+    const noChoices = frame.getByText("No untracked changes.");
+    await noChoices.waitFor();
+    await page.evaluate(() => {
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+    });
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length === 6);
+    await page.evaluate(() => __theme("dark"));
+    await frame.locator('html[data-oc-theme="dark"]').waitFor();
+    assert.equal(await noChoices.isVisible(), true);
+    assert.equal(await picker.getByRole("button").count(), 0);
+    await page.close();
+  });
+});
+
+test("session section collapses the disclosure when a finished turn changes the current task", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=progress`);
+    const frame = page.frameLocator("iframe");
+    const detail = frame.locator("details");
+    await detail.locator("summary").getByText("Tasks:", { exact: true }).click();
+    await page.evaluate(() => {
+      __edit("More tasks complete");
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+    });
+    await frame.getByText("4/7", { exact: true }).waitFor();
+    assert.equal(
+      await detail.locator("summary").getByRole("button", { name: "Task 5" }).isVisible(),
+      true,
+    );
+    assert.equal(await detail.getAttribute("open"), null);
+    await page.close();
+  });
+});
+
+for (const scenario of ["other-directory-error", "unregistered-saved", "unregistered-picker"]) {
+  test(`session section resolves ${scenario} without requiring project-wide session readiness`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=${scenario}`);
+      const frame = page.frameLocator("iframe");
+      if (scenario === "unregistered-picker") {
+        await frame.getByRole("button", { name: "＋ Track a change", exact: true }).click({
+          timeout: 3000,
+        });
+        await frame.getByRole("button", { name: "first-change", exact: true }).waitFor();
+      } else {
+        await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor({
+          timeout: 3000,
+        });
+      }
+      await page.waitForFunction(() =>
+        __requests.some((r) => r.path === "storage" && r.body.op === "get"),
+      );
+      assert.equal(
+        await page.evaluate(() => __requests.some((r) => r.path === "/summaries")),
+        false,
+      );
+      await page.close();
+    });
+  });
+}
+
+test("session section coalesces refresh triggers during a read", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=item`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByText("1/2", { exact: true }).waitFor();
+    await page.evaluate(() => {
+      __holdTasks();
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+    });
+    await page.waitForFunction(
+      () => __requests.filter((r) => r.path === "/tasks").length === 2,
+      null,
+      {
+        timeout: 3000,
+      },
+    );
+    await page.evaluate(() => {
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+      __lifecycle("fixture-session", "started");
+      __lifecycle("fixture-session", "completed");
+      __theme("light");
+    });
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/changes").length),
+      2,
+    );
+    await page.evaluate(() => {
+      __edit("Completed");
+      __releaseReads();
+    });
+    await frame.getByText("2/2", { exact: true }).waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/tasks").length === 3);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/changes").length),
+      3,
+    );
+    await page.close();
+  });
+});
+
+test("session section re-resolves on session switch without remounting or rendering stale reads", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?status=switch`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("heading", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => __holdTasks());
+    await frame.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/tasks").length === 2);
+    await page.evaluate(() => __session("replacement-session"));
+    await frame.getByRole("status").filter({ hasText: "Loading OpenSpec change" }).waitFor();
+    await frame.locator("#root").evaluate((node) => {
+      window.__oldRendered = false;
+      new MutationObserver(() => {
+        if (node.querySelector("h1")?.textContent === "first-change") window.__oldRendered = true;
+      }).observe(node, { childList: true, subtree: true });
+    });
+    await page.evaluate(() => __releaseReads());
+    await frame.getByRole("heading", { name: "second-change", exact: true }).waitFor();
+    assert.equal(await frame.locator("html").evaluate(() => window.__oldRendered), false);
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "/tasks" && r.body.change === "second-change"),
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "workspace-subscribe").length),
+      1,
+    );
+    assert.equal(await page.evaluate(() => __requests.some((r) => r.path === "/summaries")), false);
+    await page.close();
+  });
+});
+
+for (const [scenario, optional] of [
+  ["header", true],
+  ["archive", false],
+]) {
+  test(`session section shows one footer after ${optional ? "the cards" : "no cards"}`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?status=${scenario}&hold-ready`);
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate((optional) => {
+        if (optional) __workflows(["new"]);
+        __releaseReady();
+      }, optional);
+      const section = page.frameLocator('iframe[title="OpenSpec test panel"]');
+      const footer = section.locator("footer");
+      const refresh = footer.getByRole("button", { name: "Refresh", exact: true });
+      await refresh.waitFor({ timeout: 3000 });
+      await footer
+        .getByRole("button", { name: "＋ Track a change" })
+        .and(footer.locator("button:enabled"))
+        .waitFor({ timeout: 3000 });
+      assert.deepEqual(
+        await footer
+          .getByRole("button")
+          .evaluateAll((buttons) =>
+            buttons.map((node) => node.getAttribute("aria-label") ?? node.textContent),
+          ),
+        optional
+          ? ["＋ Track a change", "new", "board", "Refresh"]
+          : ["＋ Track a change", "board", "Refresh"],
+      );
+      assert.equal(await refresh.innerText(), "");
+      assert.equal(await refresh.locator("svg").count(), 1);
+      assert.equal(await section.getByRole("article").count(), optional ? 1 : 0);
+      assert.equal(
+        await section
+          .locator("article")
+          .getByRole("button", { name: "board", exact: true })
+          .count(),
+        0,
+      );
+      if (optional) {
+        const card = await section.getByRole("article").boundingBox();
+        assert.ok((await footer.boundingBox()).y >= card.y + card.height);
+        await page.evaluate(() => {
+          delete window.__releaseReady;
+          __mountBoard();
+        });
+        await page.waitForFunction(() => typeof window.__releaseReady === "function", null, {
+          timeout: 3000,
+        });
+        await page.evaluate(() => __releaseReady());
+        const board = page.frameLocator('iframe[title="OpenSpec test board"]');
+        await board
+          .getByRole("button", { name: "first-change", exact: true })
+          .click({ timeout: 3000 });
+        await board.getByRole("button", { name: "Back to changes" }).waitFor();
+        await footer.getByRole("button", { name: "board", exact: true }).click();
+        await page.waitForFunction(() => __requests.some(({ path }) => path === "open-surface"));
+        await page.evaluate(() => __theme("light"));
+        await board.locator('html[data-oc-theme="light"]').waitFor();
+        assert.equal(
+          await board.getByRole("heading", { name: "first-change", exact: true }).isVisible(),
+          true,
+        );
+        assert.deepEqual(
+          await page.evaluate(() =>
+            __requests.filter(({ path }) => path === "open-surface" || path === "/focus"),
+          ),
+          [{ path: "open-surface", body: { surfaceId: "plugin:openspec-board" } }],
+        );
+        assert.equal(
+          await page.evaluate(() => __completed.filter((path) => path === "/workflows").length),
+          2,
+        );
+        await page.evaluate(() => __edit("Completed"));
+        await refresh.click();
+        await section.getByText("2/2", { exact: true }).waitFor();
+        assert.equal(
+          await page.evaluate(() => __completed.filter((path) => path === "/workflows").length),
+          3,
+        );
+        assert.equal(
+          await page.evaluate(() => __requests.filter(({ path }) => path === "/changes").length),
+          3,
+        );
+      }
+      assert.equal(
+        await page.evaluate(() => __requests.some(({ path }) => path === "status-controls")),
+        false,
+      );
+      await page.close();
+    });
+  });
+}
+
+test("a long Work Status change name truncates before the count wraps", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+    await page.goto(`${url}?status=long-card-name&pointer=coarse`);
+    const frame = page.frameLocator("iframe");
+    const name = frame.getByRole("button", { name: /^long-name-/ });
+    await name.waitFor();
+    const count = frame.getByText("6/6", { exact: true });
+    const lines = await count.evaluate((node) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return range.getClientRects().length;
+    });
+    assert.equal(lines, 1);
+    assert.equal(
+      await name.evaluate(
+        (node) =>
+          node.scrollWidth > node.clientWidth && getComputedStyle(node).textOverflow === "ellipsis",
+      ),
+      true,
+    );
+    const summary = frame.locator("summary:visible");
+    assert.equal(
+      await summary
+        .getByText("Tasks:", { exact: true })
+        .evaluate((node) => getComputedStyle(node).textDecorationLine),
+      "none",
+    );
+    assert.equal(
+      await summary
+        .getByRole("button", { name: "Task 6" })
+        .evaluate((node) => getComputedStyle(node).textDecorationLine),
+      "underline",
+    );
+  });
+});
+
+for (const pointer of ["coarse", "fine"]) {
+  test(`Work Status keeps Untrack right-aligned on a ${pointer} pointer`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+      await page.goto(`${url}?status=item&pointer=${pointer}`);
+      const frame = page.frameLocator("iframe");
+      const track = frame.getByRole("button", { name: "＋ Track a change" });
+      await track.waitFor();
+      assert.equal(
+        await track.evaluate((node) => getComputedStyle(node).textDecorationLine),
+        "underline",
+      );
+      await frame.getByRole("button", { name: "first-change", exact: true }).click();
+      const untrack = frame.getByRole("button", { name: "Untrack" });
+      await untrack.waitFor();
+      assert.equal(
+        await untrack.evaluate((node) => getComputedStyle(node).textDecorationLine),
+        "underline",
+      );
+      assert.ok(
+        await untrack.evaluate((node) => {
+          const { width, right } = node.getBoundingClientRect();
+          const card = node.parentElement.getBoundingClientRect();
+          return width < card.width / 2 && right === card.right;
+        }),
+      );
+      assert.ok(
+        pointer === "coarse"
+          ? (await untrack.boundingBox()).height >= 44
+          : (await untrack.boundingBox()).height <= 24,
+      );
+    });
+  });
+
+  test(`session section keeps two cards within 320px for a ${pointer} pointer`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({
+        viewport: { width: 320, height: 720 },
+        hasTouch: pointer === "coarse",
+      });
+      await page.goto(`${url}?status=compact-touch&pointer=${pointer}&hold-ready`);
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate(() => {
+        __workflows(["new"]);
+        __releaseReady();
+      });
+      const frame = page.frameLocator("iframe");
+      await frame
+        .getByRole("article")
+        .filter({ hasText: "second-change" })
+        .waitFor({ timeout: 3000 });
+      await frame.locator("summary:visible").getByText("Tasks:", { exact: true }).click();
+      const chips = await frame
+        .locator("article .card-actions")
+        .evaluateAll((rows) =>
+          rows.map((row) =>
+            [...row.querySelectorAll("button")]
+              .filter((button) => button.getClientRects().length)
+              .map((button) => button.getBoundingClientRect().toJSON()),
+          ),
+        );
+      assert.deepEqual(
+        chips.map((row) => row.length),
+        [3, 3],
+      );
+      for (const row of chips) {
+        for (const [index, box] of row.entries()) {
+          if (pointer === "coarse") {
+            assert.equal(box.height, 28);
+            if (index > 0) {
+              const previous = row[index - 1];
+              assert.ok(box.left - previous.right >= 8 || box.top - previous.bottom >= 8);
+            }
+          } else assert.ok(box.height <= 24);
+        }
+      }
+      const lines = await frame
+        .locator("footer button:visible, article :is(summary, .flyout-trigger):visible")
+        .evaluateAll((nodes) =>
+          nodes.map((node) => ({
+            label: node.getAttribute("aria-label") ?? node.textContent.slice(0, 40),
+            height: node.getBoundingClientRect().height,
+            lineHeight: parseFloat(getComputedStyle(node).lineHeight),
+          })),
+        );
+      assert.equal(lines.length, 13);
+      for (const { label, height, lineHeight } of lines)
+        assert.ok(
+          height > 0 && height <= lineHeight + 0.05,
+          `${label}: ${height}px exceeds line height ${lineHeight}px`,
+        );
+      const footer = frame.locator("footer");
+      assert.ok(
+        (await footer.boundingBox()).height <=
+          Math.max(...lines.slice(-4).map(({ lineHeight }) => lineHeight)) + 0.05,
+      );
+      assert.ok(
+        await frame
+          .locator("html")
+          .evaluate(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth),
+      );
+    });
+  });
+
+  test(`phone controls respect the host's ${pointer} pointer at 320px`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+      await page.goto(`${url}?pointer=${pointer}`);
+      const frame = page.frameLocator("iframe");
+      const card = frame.getByRole("button", { name: "first-change", exact: true });
+      const create = frame.getByRole("button", { name: "new change", exact: true });
+      await card.waitFor();
+      const search = frame.getByRole("searchbox", { name: "Search changes" });
+      const boardHeight = [
+        (await create.boundingBox()).height,
+        (await search.boundingBox()).height,
+      ];
+      await create.click();
+      const dialog = frame.getByRole("dialog", { name: "New change" });
+      const fields = dialog.getByRole("textbox");
+      const dialogHeight = (await fields.first().boundingBox()).height;
+      const cancel = dialog.getByRole("button", { name: "cancel", exact: true });
+      const cancelHeight = (await cancel.boundingBox()).height;
+      await cancel.click();
+      await card.click();
+      const back = frame.getByRole("button", { name: "Back to changes", exact: true });
+      const tab = frame.getByRole("tab").first();
+      const detailHeight = [(await back.boundingBox()).height, (await tab.boundingBox()).height];
+
+      const heights = [...boardHeight, dialogHeight, cancelHeight, ...detailHeight];
+      if (pointer === "coarse") {
+        for (const height of heights)
+          assert.ok(height >= 44, `Expected at least 44px, got ${height}px`);
+      } else {
+        assert.deepEqual(boardHeight, [28, 36]);
+        assert.deepEqual(detailHeight, [28, 28]);
+        assert.equal(cancelHeight, 28);
+        assert.ok(dialogHeight < 44);
+      }
+      await page.close();
+    });
+  });
+}
+
+test("phone detail footer keeps its controls above a reported bottom inset", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+    await page.goto(`${url}?pointer=coarse`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("button", { name: "first-change", exact: true }).click();
+    const footer = frame.locator(".detail-footer");
+    const before = await footer.evaluate((node) =>
+      parseFloat(getComputedStyle(node).paddingBottom),
+    );
+    await page.evaluate(() => __device(26, 0));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    assert.equal(
+      await footer.evaluate((node) => parseFloat(getComputedStyle(node).paddingBottom)),
+      before + 26,
+    );
+    await page.close();
+  });
+});
+
+test("phone create dialogue keeps its field and buttons above a reported keyboard", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 640 } });
+    await page.goto(`${url}?pointer=coarse`);
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("button", { name: "new change", exact: true }).click();
+    const dialog = frame.getByRole("dialog", { name: "New change" });
+    await dialog.getByRole("textbox").first().fill("phone-change");
+    await page.evaluate(() => __device(0, 300));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
+    const layout = await dialog.evaluate((node) => ({
+      bottom: node.getBoundingClientRect().bottom,
+      maxBottom: innerHeight - 300,
+      controls: [...node.querySelectorAll("input, button")]
+        .filter((item) => item.getClientRects().length)
+        .map((item) => {
+          const rect = item.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom };
+        }),
+    }));
+    assert.ok(layout.bottom <= layout.maxBottom, "Dialogue extends behind the keyboard");
+    for (const { top, bottom } of layout.controls)
+      assert.ok(top >= 0 && bottom <= layout.maxBottom);
+    await page.close();
+  });
+});
+
+for (const pointer of ["coarse", "fine"]) {
+  test(`phone detail close and delete restore ${pointer}-pointer focus`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+      await page.goto(`${url}?pointer=${pointer}`);
+      const frame = page.frameLocator("iframe");
+      const card = frame.getByRole("button", { name: "first-change", exact: true });
+      const back = frame.getByRole("button", { name: "Back to changes", exact: true });
+      await card.click();
+      await back.click();
+      assert.equal(await card.evaluate((node) => node === document.activeElement), true);
+
+      await card.click();
+      await page.evaluate(() => __remove("first-change"));
+      await frame.locator(".detail").getByRole("button", { name: "refresh", exact: true }).click();
+      await frame.getByText("This change is no longer available", { exact: false }).waitFor();
+      await back.click();
+      const fallback =
+        pointer === "coarse"
+          ? frame.getByRole("button", { name: "new change", exact: true })
+          : frame.getByRole("searchbox", { name: "Search changes" });
+      assert.equal(
+        await fallback.evaluate((node) => node === document.activeElement),
+        true,
+        "Close without a card should restore focus to the pointer-specific fallback",
+      );
+
+      await frame.getByRole("button", { name: "second-change", exact: true }).click();
+      await frame.getByRole("button", { name: "Delete change", exact: true }).click();
+      const dialog = frame.getByRole("dialog", { name: /Delete second-change/ });
+      await dialog.getByRole("button", { name: "delete", exact: true }).click();
+      await page.waitForFunction(() => __completed.includes("/delete"));
+      await dialog.waitFor({ state: "hidden" });
+      await fallback.waitFor();
+      assert.equal(
+        await fallback.evaluate((node) => node === document.activeElement),
+        true,
+        "Delete should restore focus to the pointer-specific fallback",
+      );
+      await page.close();
+    });
+  });
 }
 
 test("presentation modal backdrops dim every dialog without changing keyboard cancellation", async () => {
@@ -579,7 +2932,10 @@ test("presentation footer keeps equal 12px control gaps and an external separato
         'Use your skill tool to load and invoke the openspec-apply-change skill for OpenSpec change "first-change".',
       ),
     );
-    await page.evaluate(() => __edit("Completed"));
+    await page.evaluate(() => {
+      __edit("Completed");
+      __workflows(["verify"]);
+    });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await footer.getByRole("button", { name: "verify", exact: true }).waitFor();
     await page.setViewportSize({ width: 320, height: 700 });
@@ -684,7 +3040,358 @@ test("presentation page fills short boards and preserves long board and detail s
   });
 });
 
-test("one board load requests one listing and one summaries batch", async () => {
+test("board tabs retain the Changes cards, scroll and focus without reading again", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 420, height: 460 } });
+    await page.goto(`${url}?hold-ready`);
+    const panel = page.frameLocator("iframe");
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate(() => {
+      __edit("Completed");
+      for (let i = 0; i < 16; i++) __recreate(`long-board-${String(i).padStart(2, "0")}`);
+      __releaseReady();
+    });
+    const last = panel.getByRole("button", { name: "long-board-15", exact: true });
+    await last.waitFor();
+    const tabs = panel.getByRole("tablist", { name: "OpenSpec views" });
+    const changes = tabs.getByRole("tab", { name: "Changes", exact: true });
+    const archived = tabs.getByRole("tab", { name: "Archived", exact: true });
+    const specs = tabs.getByRole("tab", { name: "Specs", exact: true });
+    await changes.waitFor({ timeout: 3000 });
+    assert.equal(await changes.getAttribute("aria-selected"), "true");
+    assert.equal(await tabs.evaluate((node) => node.closest("header") === null), true);
+    const before = await page.evaluate(
+      () =>
+        __requests.filter(({ path }) => ["/changes", "/workflows", "/summaries"].includes(path))
+          .length,
+    );
+    await last.scrollIntoViewIfNeeded();
+    const scroll = await last.evaluate((node) => {
+      node.focus({ preventScroll: true });
+      window.lastChangeControl = node;
+      return window.scrollY;
+    });
+    assert.ok(scroll > 0);
+    await archived.evaluate((node) => node.click());
+    assert.equal(await archived.getAttribute("aria-selected"), "true");
+    assert.equal(await last.count(), 0);
+    await specs.evaluate((node) => node.click());
+    assert.equal(await specs.getAttribute("aria-selected"), "true");
+    assert.equal(await panel.getByRole("button", { name: "new change" }).isEnabled(), true);
+    assert.equal(await panel.getByRole("button", { name: "archive all" }).isEnabled(), true);
+    const search = panel.getByRole("searchbox", { name: "Search changes" });
+    await search.fill("long-board");
+    await changes.evaluate((node) => node.click());
+    assert.equal(await search.inputValue(), "long-board");
+    assert.equal(await panel.getByRole("button", { name: "first-change", exact: true }).count(), 0);
+    assert.deepEqual(
+      await last.evaluate((node) => ({
+        same: node === window.lastChangeControl,
+        focused: document.activeElement === node,
+        scroll: window.scrollY,
+      })),
+      { same: true, focused: true, scroll },
+    );
+    await search.fill("Recreated goal");
+    assert.equal(await last.count(), 0);
+    assert.equal(
+      await page.evaluate(
+        () =>
+          __requests.filter(({ path }) => ["/changes", "/workflows", "/summaries"].includes(path))
+            .length,
+      ),
+      before,
+    );
+  });
+});
+
+test("coarse-pointer board tabs are touch-sized and reachable with arrow keys", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 320, height: 700 }, hasTouch: true });
+    await page.goto(`${url}?pointer=coarse`);
+    const tabs = page.frameLocator("iframe").getByRole("tablist", { name: "OpenSpec views" });
+    const changes = tabs.getByRole("tab", { name: "Changes", exact: true });
+    const archived = tabs.getByRole("tab", { name: "Archived", exact: true });
+    const specs = tabs.getByRole("tab", { name: "Specs", exact: true });
+    await changes.waitFor({ timeout: 3000 });
+    for (const tab of [changes, archived, specs]) assert.ok((await tab.boundingBox()).height >= 44);
+    await changes.press("ArrowRight");
+    assert.equal(await archived.getAttribute("aria-selected"), "true");
+    assert.equal(await archived.evaluate((node) => document.activeElement === node), true);
+    await archived.press("ArrowRight");
+    assert.equal(await specs.getAttribute("aria-selected"), "true");
+    await specs.press("ArrowLeft");
+    assert.equal(await archived.getAttribute("aria-selected"), "true");
+  });
+});
+
+test("Archived orders and filters archived changes without reading them before opening", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() =>
+      __archived([
+        { name: "no-date", completedTasks: 0, totalTasks: 0 },
+        { name: "2026-11-20-add-login", completedTasks: 7, totalTasks: 7 },
+        { name: "2026-11-22-fix-cache", completedTasks: 3, totalTasks: 3 },
+        { name: "2026-11-22-add-cache", completedTasks: 1, totalTasks: 2 },
+      ]),
+    );
+    assert.equal(await page.evaluate(() => __requests.some((r) => r.path === "/archived")), false);
+    await panel.getByRole("tab", { name: "Archived", exact: true }).click();
+    const archive = panel.getByRole("tabpanel", { name: "Archived" });
+    await archive.getByText("fix-cache", { exact: true }).waitFor({ timeout: 3000 });
+    const rows = archive.getByRole("listitem");
+    assert.deepEqual(await rows.allTextContents(), [
+      "add-cache2026-11-221 of 2 tasks",
+      "fix-cache2026-11-223 of 3 tasks",
+      "add-login2026-11-207 of 7 tasks",
+      "no-date0 of 0 tasks",
+    ]);
+    await panel.getByRole("searchbox", { name: "Search changes" }).fill("login");
+    assert.deepEqual(await rows.allTextContents(), ["add-login2026-11-207 of 7 tasks"]);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/archived").length),
+      1,
+    );
+  });
+});
+
+test("Archived retains reads across tab switches but a Refresh on Changes invalidates them", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const archived = panel.getByRole("tab", { name: "Archived", exact: true });
+    const changes = panel.getByRole("tab", { name: "Changes", exact: true });
+    const archive = panel.getByRole("tabpanel", { name: "Archived" });
+    await archived.click();
+    await archive.getByText("No changes are archived.").waitFor({ timeout: 3000 });
+    await changes.click();
+    await page.evaluate(() =>
+      __archived([{ name: "2026-11-22-fix-cache", completedTasks: 3, totalTasks: 3 }]),
+    );
+    await archived.click();
+    await archive.getByText("No changes are archived.").waitFor();
+    assert.equal(await page.evaluate(() => __completed.filter((p) => p === "/archived").length), 1);
+    await changes.click();
+    await page.evaluate(() => __recreate("loaded-on-refresh"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "loaded-on-refresh", exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/archived").length),
+      1,
+    );
+    await archived.click();
+    await archive.getByText("fix-cache", { exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/archived").length),
+      2,
+    );
+  });
+});
+
+test("Archived shows the CLI error without rows and refresh retries the shown view", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => __archived(null));
+    await panel.getByRole("tab", { name: "Archived", exact: true }).click();
+    const archive = panel.getByRole("tabpanel", { name: "Archived" });
+    await archive.getByText("Cannot list archived changes").waitFor({ timeout: 3000 });
+    assert.equal(await archive.getByRole("listitem").count(), 0);
+    await page.evaluate(() => __archived([]));
+    await archive.getByRole("button", { name: "refresh", exact: true }).click();
+    await archive.getByText("No changes are archived.").waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/archived").length),
+      2,
+    );
+  });
+});
+
+test("Specs lists ids in CLI order, pluralizes counts and searches by id", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() =>
+      __specs([
+        { id: "team/nested", requirementCount: 5 },
+        { id: "public-api", requirementCount: 1 },
+      ]),
+    );
+    assert.equal(
+      await page.evaluate(() => __requests.some((r) => ["/specs", "/spec"].includes(r.path))),
+      false,
+    );
+    await panel.getByRole("tab", { name: "Specs", exact: true }).click();
+    const list = panel.getByRole("tabpanel", { name: "Specs" });
+    await list.getByText("5 requirements", { exact: true }).waitFor({ timeout: 3000 });
+    const rows = list.getByRole("listitem");
+    const labels = await rows.allTextContents();
+    assert.match(labels[0], /team\/nested.*5 requirements/);
+    assert.match(labels[1], /public-api.*1 requirement$/);
+    await panel.getByRole("searchbox", { name: "Search changes" }).fill("API");
+    assert.deepEqual(await rows.allTextContents(), [labels[1]]);
+  });
+});
+
+test("Specs renders the entire file safely and Back preserves the scrolled list without rereading", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage({ viewport: { width: 420, height: 460 } });
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => {
+      __specs(Array.from({ length: 40 }, (_, n) => ({ id: `readable-${n}`, requirementCount: 1 })));
+      __spec(
+        "readable-39",
+        "# Main spec\n\n## Purpose\n\nA real document.\n\n## Extra notes\n\n- As written\n\n" +
+          '<button id="untrusted">Raw HTML</button>\n\n[Unsafe link](mailto:inert@example.com)',
+      );
+    });
+    await panel.getByRole("tab", { name: "Specs", exact: true }).click();
+    const last = panel.getByRole("button", { name: /readable-39/ });
+    await last.waitFor({ timeout: 3000 });
+    await last.scrollIntoViewIfNeeded();
+    const listScroll = await last.evaluate(() => window.scrollY);
+    assert.ok(listScroll > 0);
+    await last.click();
+    const doc = panel.locator(".document-content:visible");
+    await doc.getByRole("heading", { name: "Extra notes" }).waitFor({ timeout: 3000 });
+    assert.equal(await doc.getByRole("listitem").filter({ hasText: "As written" }).count(), 1);
+    await doc.getByText('<button id="untrusted">Raw HTML</button>', { exact: true }).waitFor();
+    assert.equal(await doc.getByRole("button", { name: "Raw HTML" }).count(), 0);
+    assert.equal(await doc.getByRole("link", { name: "Unsafe link" }).count(), 0);
+    await panel.getByRole("button", { name: "Back to specs" }).click();
+    assert.equal(await last.evaluate(() => window.scrollY), listScroll);
+    await last.click();
+    await doc.getByRole("heading", { name: "Extra notes" }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/spec"],
+    );
+  });
+});
+
+test("Specs retains the list and documents across tabs until a Refresh elsewhere", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    const specs = panel.getByRole("tab", { name: "Specs", exact: true });
+    const changes = panel.getByRole("tab", { name: "Changes", exact: true });
+    await page.evaluate(() => {
+      __specs([{ id: "example", requirementCount: 1 }]);
+      __spec("example", "# Before Refresh");
+    });
+    await specs.click();
+    await panel.getByRole("button", { name: /example/ }).click({ timeout: 3000 });
+    await panel.getByRole("heading", { name: "Before Refresh" }).waitFor();
+    await panel.getByRole("button", { name: "Back to specs" }).click();
+    await changes.click();
+    await page.evaluate(() => {
+      __specs([{ id: "example", requirementCount: 5 }]);
+      __spec("example", "# After Refresh");
+    });
+    await specs.click();
+    await panel.getByText("1 requirement", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: /example/ }).click();
+    await panel.getByRole("heading", { name: "Before Refresh" }).waitFor();
+    await panel.getByRole("button", { name: "Back to specs" }).click();
+    await changes.click();
+    await page.evaluate(() => __recreate("loaded-on-refresh"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "loaded-on-refresh", exact: true }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/spec"],
+    );
+    await specs.click();
+    await panel.getByText("5 requirements", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: /example/ }).click();
+    await panel.getByRole("heading", { name: "After Refresh" }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/spec", "/specs", "/spec"],
+    );
+  });
+});
+
+test("a failed spec read offers a retry without showing partial content", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => __specs([{ id: "example", requirementCount: 1 }]));
+    await panel.getByRole("tab", { name: "Specs", exact: true }).click();
+    await panel.getByRole("button", { name: /example/ }).click({ timeout: 3000 });
+    await panel.getByText("Spec is no longer listed.").waitFor({ timeout: 3000 });
+    assert.equal(await panel.locator(".document-content:visible").count(), 0);
+    await page.evaluate(() => __spec("example", "# Recovered spec"));
+    await panel.getByRole("button", { name: "Retry document", exact: true }).click();
+    await panel.getByRole("heading", { name: "Recovered spec" }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/spec", "/spec"],
+    );
+  });
+});
+
+test("Refresh reads the shown spec without prefetching the hidden list", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await panel.getByRole("tab", { name: "Specs", exact: true }).click();
+    await panel.getByText("No specs exist yet.").waitFor();
+    await page.evaluate(() => {
+      __specs([{ id: "example", requirementCount: 1 }]);
+      __spec("example", "# First spec version");
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: /example/ }).click();
+    await panel.getByRole("heading", { name: "First spec version" }).waitFor();
+    await page.evaluate(() => __spec("example", "# Refreshed spec version"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("heading", { name: "Refreshed spec version" }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/specs", "/spec", "/spec"],
+    );
+    await page.evaluate(() => __specs([]));
+    await panel.getByRole("button", { name: "Back to specs" }).click();
+    await panel.getByText("No specs exist yet.").waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter((r) => ["/specs", "/spec"].includes(r.path)).map((r) => r.path),
+      ),
+      ["/specs", "/specs", "/spec", "/spec", "/specs"],
+    );
+  });
+});
+
+test("one board load requests one listing, workflow read and summaries batch", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
     await page.goto(url);
@@ -693,7 +3400,95 @@ test("one board load requests one listing and one summaries batch", async () => 
     const paths = await page.evaluate(() => __requests.map((item) => item.path));
     assert.deepEqual(
       paths.filter((path) => path.startsWith("/")),
-      ["/changes", "/summaries"],
+      ["/changes", "/workflows", "/summaries"],
+    );
+  });
+});
+
+test("board reads configured workflows on mount, refresh and directory change", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => __recreate("loaded-on-refresh"));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "loaded-on-refresh", exact: true }).waitFor();
+    await page.evaluate(() => __directory("/tmp/board-workflows-other-project"));
+    await panel.getByText("0 changes · 0 of 0 tasks complete", { exact: true }).waitFor();
+    await panel.locator(".new-change-control button:enabled").waitFor();
+    assert.deepEqual(
+      await page.evaluate(() =>
+        __requests.filter(({ path }) => path === "/workflows").map(({ body }) => body),
+      ),
+      [{ directory }, { directory }, { directory: "/tmp/board-workflows-other-project" }],
+    );
+  });
+});
+
+for (const first of ["/changes", "/workflows"]) {
+  test(`board waits for both the listing and workflows when ${first} answers first`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?hold-ready`);
+      const panel = page.frameLocator("iframe");
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate((path) => {
+        const frame = document.querySelector("iframe").contentWindow;
+        frame.addEventListener("message", (event) => {
+          const body = event.data?.payload?.body;
+          if (event.data?.type !== "result" || typeof body !== "string") return;
+          const value = JSON.parse(body);
+          if (
+            path === "/changes" ? !Array.isArray(value?.changes) : !Array.isArray(value?.workflows)
+          )
+            return;
+          frame.document.documentElement.dataset.firstBoardReply = path;
+        });
+        if (path === "/changes") __holdWorkflows();
+        else __holdListing();
+        __releaseReady();
+      }, first);
+      await page.waitForFunction(
+        () => ["/changes", "/workflows"].every((path) => __requests.some((r) => r.path === path)),
+        null,
+        { timeout: 3000 },
+      );
+      await panel.locator(`html[data-first-board-reply="${first}"]`).waitFor();
+      assert.equal(await panel.locator(".change-card").count(), 0);
+      assert.equal(
+        await panel.locator(".board-tally").textContent(),
+        "0 changes · 0 of 0 tasks complete",
+      );
+      await page.evaluate((path) => {
+        if (path === "/changes") __releaseWorkflows();
+        else __releaseListing();
+      }, first);
+      await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    });
+  });
+}
+
+test("board falls back to core workflows without showing the config error", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?hold-ready`);
+    const panel = page.frameLocator("iframe");
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate(() => {
+      __workflows(null);
+      __readiness("blocked-tasks");
+      __releaseReady();
+    });
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "second-change" })
+      .getByRole("button", { name: "propose", exact: true })
+      .waitFor();
+    assert.equal(await panel.getByText("Cannot read workflows").count(), 0);
+    assert.equal(
+      await page.evaluate(() => __completed.filter((p) => p === "/workflows").length),
+      1,
     );
   });
 });
@@ -765,6 +3560,7 @@ test("new-worktree Apply delegates a path-free first message and opens only afte
     const requests = await page.evaluate(() => __requests);
     const start = requests.find((r) => r.path === "start-session").body;
     assert.equal(start.projectId, "origin-project");
+    assert.deepEqual(start.data, { kind: "change", change: "first-change" });
     assert.deepEqual(start.worktree, { kind: "new", name: "first-change" });
     assert.equal(start.navigation, "preserve");
     assert.match(
@@ -1003,6 +3799,8 @@ test("Apply menu rejects a selection from a replaced chat but accepts a newly op
       .getByRole("button", { name: "apply", exact: true });
     await trigger.click();
     await page.evaluate(() => __session({ id: "replacement-chat" }));
+    await page.evaluate(() => __theme("light"));
+    await panel.locator('html[data-oc-theme="light"]').waitFor();
     await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
     await assert.rejects(
       page.waitForFunction(
@@ -1059,8 +3857,10 @@ test("four cards arrive together after the listing count and tally", async () =>
     assert.equal(await panel.locator(".change-card").count(), 4);
     assert.deepEqual(await page.evaluate(() => __requests.map((item) => item.path)), [
       "/changes",
+      "/workflows",
       "/summaries",
       "/changes",
+      "/workflows",
       "/summaries",
     ]);
   });
@@ -1342,6 +4142,7 @@ test("archive all uses secondary controls and requires cancellable confirmation"
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await archive.waitFor();
     await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 2);
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     assert.equal(await archive.isEnabled(), true);
     assert.equal(await archive.getAttribute("data-variant"), "secondary");
     assert.equal(await archive.locator('svg[aria-hidden="true"]').count(), 1);
@@ -1441,25 +4242,18 @@ test("archive all submits one completed-only prompt and preserves rail/page fres
       assert.equal(launch.body.worktree, undefined);
       assert.equal(launch.body.projectId, undefined);
       assert.equal(launch.body.providerId, "openspec-board");
+      assert.deepEqual(launch.body.data, { kind: "archive-all" });
       assert.ok(launch.body.text.length < 16000);
-      for (const pattern of [
-        /openspec list --json/,
-        /openspec status/,
-        /CLI-reported task/,
-        /positive task total/,
-        /done.*skipped/s,
-        /sequentially/,
-        /openspec-archive-change/,
-        /Use your skill tool to load and invoke the openspec-archive-change skill/,
-        /unfinished/,
-        /unavailable/,
-        /unreadable/,
-        /verification/,
-        /sync.*choices/s,
-        /archived.*skipped.*blocked/s,
-        /none qualify.*no.*mutations/s,
-      ])
-        assert.match(launch.body.text, pattern);
+      assert.equal(
+        launch.body.text,
+        `Archive all completed OpenSpec changes in this session's project/worktree.
+
+Run openspec list --json for a fresh active-change listing and resolve its OpenSpec planning context, honouring declared stores and the selected CLI root. Inspect each change with openspec status --change "<name>" --json and current CLI-reported task counts. Only changes with every applicable planning artefact done or explicitly skipped, a positive task total, and all tasks complete qualify. Skip unfinished, zero-task, unavailable or unreadable changes. Never use an incomplete-work warning override or infer successful verification from a Complete card or task counts.
+
+Use your skill tool to load and invoke the openspec-archive-change skill for each qualifying named change sequentially. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
+
+Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`,
+      );
       assert.equal(await page.evaluate(() => __draft()), "Earlier draft");
       assert.equal(await panel.locator(".board-shell").isVisible(), true);
       await page.waitForFunction(() => __requests.some((r) => r.path === "toast"));
@@ -1469,6 +4263,33 @@ test("archive all submits one completed-only prompt and preserves rail/page fres
       );
       await page.close();
     }
+  });
+});
+
+test("archive all submits the selection-preserving bulk prompt when configured", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await panel.getByRole("button", { name: "first-change", exact: true }).waitFor();
+    await page.evaluate(() => {
+      __workflows(["bulk-archive"]);
+      __edit("Completed");
+    });
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await confirmArchive(panel);
+    await page.waitForFunction(() => __requests.some((r) => r.path === "start-session"));
+    const prompt = await page.evaluate(
+      () => __requests.find((r) => r.path === "start-session").body.text,
+    );
+    assert.equal(
+      prompt,
+      `Archive all completed OpenSpec changes in this session's project/worktree.
+
+Use your skill tool to load and invoke the openspec-bulk-archive-change skill. Before its selection step, run openspec list --json and openspec status --change "<name>" --json for each change. A change qualifies only when every applicable planning artefact is done or explicitly skipped and it has a positive task total with all tasks complete. When the skill asks which changes to archive, offer only qualifying changes and recommend all of them. Skip any selected change that does not qualify; never use an incomplete-work override or infer verification from task counts.
+
+Preserve the skill's spec-sync assessment, user choices and blockers. Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`,
+    );
   });
 });
 
@@ -1530,6 +4351,10 @@ test("archive all holds one launch and discards late feedback without refresh or
       if (replacement === "dispose")
         await panel.locator("body").evaluate(() => window.dispatchEvent(new Event("pagehide")));
       await page.evaluate(() => __releaseStart());
+      if (replacement === "session")
+        await panel
+          .getByRole("button", { name: "archive all", exact: true, disabled: false })
+          .waitFor();
       await page.waitForTimeout(50);
       assert.equal(
         await page.evaluate(() => __requests.filter((r) => r.path === "start-session").length),
@@ -1638,6 +4463,7 @@ test("Markdown panel links use SDK feedback and unchanged DOM survives sibling r
       __goal("first-change", "# Literal goal");
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     await panel.getByRole("button", { name: "first-change", exact: true }).click();
     await panel.locator(".document-content pre code").waitFor();
     await panel.locator(".document-content").evaluate((node) => {
@@ -1822,8 +4648,7 @@ test("affected area refresh retains handles and focus, wraps labels and discards
     await panel
       .getByRole("button", { name: "refresh", exact: true })
       .evaluate((button) => button.click());
-    await page.waitForFunction((before) => __requests.length >= before + 7, before);
-    await panel.getByRole("button", { name: "refresh", exact: true }).waitFor();
+    await page.waitForFunction((before) => __requests.length >= before + 8, before);
     assert.ok(
       await panel
         .locator(".detail")
@@ -1842,8 +4667,9 @@ test("affected area refresh retains handles and focus, wraps labels and discards
       before,
     );
     assert.equal(requests.filter((path) => path === "/changes").length, 1);
+    assert.equal(requests.filter((path) => path === "/workflows").length, 1);
     assert.equal(requests.filter((path) => path === "/summaries").length, 1);
-    assert.equal(requests.length, 7);
+    assert.equal(requests.length, 8);
     await page.evaluate((id) => __areas(id, ["replacement"]), longTitle);
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await panel
@@ -1954,6 +4780,7 @@ test("explicit Refresh retains opened-change observations until a new opening", 
     await panel.getByRole("button", { name: "first-change" }).waitFor();
     assert.deepEqual(await page.evaluate(() => __requests.map((request) => request.path)), [
       "/changes",
+      "/workflows",
       "/summaries",
     ]);
     await panel.getByRole("button", { name: "first-change" }).click();
@@ -2611,6 +5438,7 @@ test("creation and detail use named dialogue, one main landmark and unique docum
     const page = await browser.newPage();
     await page.goto(url);
     const panel = page.frameLocator("iframe");
+    await panel.getByRole("main").waitFor();
     assert.equal(await panel.getByRole("main").count(), 1);
     await panel.getByRole("button", { name: "new change" }).click();
     const dialog = panel.getByRole("dialog", { name: "New change" });
@@ -2621,7 +5449,10 @@ test("creation and detail use named dialogue, one main landmark and unique docum
     assert.equal(await panel.getByRole("main").count(), 1);
     assert.equal(await panel.locator(".detail-content details .document-content").count(), 3);
     assert.equal(await panel.locator("[id=document-content]").count(), 0);
-    assert.equal(await panel.locator("[role=tabpanel][aria-labelledby]").count(), 1);
+    assert.equal(
+      await panel.getByRole("tabpanel").and(panel.locator("[aria-labelledby]")).count(),
+      1,
+    );
     await page.close();
   });
 });
@@ -2654,6 +5485,10 @@ test("safe creation refreshes the board and prompts stay unsent", async () => {
     await panel.getByLabel("Goal").fill("Test creation");
     await panel.getByRole("button", { name: "create", exact: true }).click();
     await panel.getByRole("button", { name: "created-change" }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/workflows").length),
+      1,
+    );
     await panel
       .locator(".change-card")
       .filter({ hasText: "created-change" })
@@ -2714,6 +5549,154 @@ test("a fresh-chat draft receives replacement composition without sending or sta
       ["compose"],
     );
     assert.equal(result.requests[0].body.mode, "replace");
+    await page.close();
+  });
+});
+
+test("preparing an unsent draft saves the tracked change for the open session", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const startedAt = Date.now();
+    await page.evaluate(() =>
+      __seedStorage([
+        ["session-change:fixture-session", { changes: ["second-change"], savedAt: 0 }],
+      ]),
+    );
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "toast" && r.body.kind === "success"),
+    );
+    await page.waitForFunction(
+      () => __stored()["session-change:fixture-session"]?.savedAt > 0,
+      null,
+      { timeout: 3000 },
+    );
+    const { stored, draft, requests } = await page.evaluate(() => ({
+      stored: __stored(),
+      draft: __draft(),
+      requests: __requests.map((r) => r.path),
+    }));
+    const saved = stored["session-change:fixture-session"];
+    assert.deepEqual(stored, {
+      "session-change:fixture-session": {
+        changes: ["second-change", "first-change"],
+        savedAt: saved?.savedAt,
+      },
+    });
+    assert.ok(Number.isInteger(saved.savedAt) && saved.savedAt >= startedAt);
+    assert.match(draft, /openspec-apply-change.*"first-change"/);
+    assert.equal(
+      requests.some((path) => path === "prompt" || path === "start-session"),
+      false,
+    );
+    await page.close();
+  });
+});
+
+for (const scenario of ["fresh chat", "rejected composition", "replaced context"]) {
+  test(`${scenario} does not save a tracked change`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(url);
+      const panel = page.frameLocator("iframe");
+      const action = panel
+        .locator(".change-card")
+        .filter({ hasText: "first-change" })
+        .getByRole("button", { name: "apply", exact: true });
+      await action.waitFor();
+      await page.evaluate((scenario) => {
+        if (scenario === "fresh chat") __session(null);
+        if (scenario === "rejected composition") __failCompose();
+        if (scenario === "replaced context") __holdCompose();
+      }, scenario);
+      if (scenario === "fresh chat") {
+        await page.evaluate(() => __theme("light"));
+        await panel.locator('html[data-oc-theme="light"]').waitFor();
+      }
+      await action.click();
+      await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+      await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+
+      if (scenario === "replaced context") {
+        await page.evaluate(() => {
+          __directory("/tmp/other-project");
+          __releaseCompose();
+        });
+        await panel.getByRole("heading", { name: "other-project" }).waitFor();
+      } else {
+        await page.waitForFunction(
+          (kind) => __requests.some((r) => r.path === "toast" && r.body.kind === kind),
+          scenario === "fresh chat" ? "success" : "error",
+        );
+      }
+      assert.deepEqual(await page.evaluate(() => __stored()), {});
+      assert.equal(await page.evaluate(() => __requests.some((r) => r.path === "storage")), false);
+      await page.close();
+    });
+  });
+}
+
+test("a tracked change storage failure leaves composition successful", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    await page.evaluate(() => __failStorage());
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __requests.some((r) => r.path === "storage"), null, {
+      timeout: 3000,
+    });
+    await page.waitForFunction(() =>
+      __requests.some((r) => r.path === "toast" && r.body.kind === "success"),
+    );
+    assert.match(await page.evaluate(() => __draft()), /openspec-apply-change.*"first-change"/);
+    assert.equal(
+      await page.evaluate(() =>
+        __requests.some((r) => r.path === "toast" && r.body.kind === "error"),
+      ),
+      false,
+    );
+    await page.close();
+  });
+});
+
+test("saving a tracked change prunes the 100 oldest choices at 1,900 keys", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(url);
+    const panel = page.frameLocator("iframe");
+    const entries = Array.from({ length: 1900 }, (_, index) => [
+      `session-change:seed-${String(index).padStart(4, "0")}`,
+      { changes: ["seed-change"], savedAt: 1900 - index },
+    ]);
+    const unrelated = ["other-preference", { savedAt: 0 }];
+    await page.evaluate((entries) => __seedStorage(entries), [...entries, unrelated]);
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "apply", exact: true })
+      .click();
+    await panel.getByRole("menuitem", { name: "Prepare in current chat", exact: true }).click();
+    await page.waitForFunction(() => __stored()["session-change:fixture-session"], null, {
+      // Pruning takes about 160 sequential storage round trips.
+      timeout: 30_000,
+    });
+    const stored = await page.evaluate(() => __stored());
+    assert.deepEqual(stored["session-change:fixture-session"].changes, ["first-change"]);
+    delete stored["session-change:fixture-session"];
+    assert.deepEqual(stored, Object.fromEntries([...entries.slice(0, 1800), unrelated]));
     await page.close();
   });
 });
@@ -2853,7 +5836,7 @@ test("canonical-root replacement discards late composer success and failure with
   });
 });
 
-test("planning, ready and complete actions prepare the appropriate unsent composer text", async () => {
+test("core planning, ready and complete actions prepare the appropriate unsent composer text", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
     await page.goto(url);
@@ -2879,12 +5862,12 @@ test("planning, ready and complete actions prepare the appropriate unsent compos
     await panel
       .locator(".change-card")
       .filter({ hasText: "first-change" })
-      .getByRole("button", { name: "verify" })
+      .getByRole("button", { name: "archive", exact: true })
       .click();
-    await page.waitForFunction(() => __draft().includes("openspec-verify-change"));
+    await page.waitForFunction(() => __draft().includes("openspec-archive-change"));
     assert.equal(
       await page.evaluate(() => __draft()),
-      'Use your skill tool to load and invoke the openspec-verify-change skill for OpenSpec change "first-change".',
+      'Use your skill tool to load and invoke the openspec-archive-change skill for OpenSpec change "first-change".',
     );
     assert.doesNotMatch(await page.evaluate(() => __draft()), /\/tmp\/fixture-project/);
     await page.evaluate(() => __readiness("pending"));
@@ -2953,7 +5936,8 @@ test("propose preserves goals and conditionally records a missing goal without s
           (before) =>
             __requests
               .slice(before)
-              .filter((r) => r.path !== "toast")
+              // Saving a new tracked list may inspect session metadata.
+              .filter(({ path }) => !["toast", "storage", "workspace-read"].includes(path))
               .map((r) => r.path),
           before,
         ),
@@ -3018,6 +6002,7 @@ test("explore is a secondary, unsent goal-aware action only in Planning", async 
       __goal("first-change", null);
     });
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     await card.getByRole("button", { name: "explore" }).click();
     await page.waitForFunction(() => __draft().includes('"first-change".\n\n'));
     const draft = await page.evaluate(() => __draft());
@@ -3091,6 +6076,8 @@ test("board title and toolbar reflow as intact rows without moving the gutter", 
           actionsTop: actions.top,
           toolbarTop: toolbar.top,
           headerBottom: rect(".board-header").bottom,
+          tabsTop: rect(".board-tabs").top,
+          tabsBottom: rect(".board-tabs").bottom,
           bodyTop: rect(".board-body").top,
           boardTop: rect(".board").top,
           searchWidth: search.width,
@@ -3121,8 +6108,9 @@ test("board title and toolbar reflow as intact rows without moving the gutter", 
       );
       assert.ok(layout.actionsRight <= width - 15);
       assert.ok(layout.toolbarTop > layout.titleTop);
-      assert.equal(layout.bodyTop - layout.headerBottom, 24);
-      assert.equal(layout.boardTop - layout.headerBottom, 24);
+      assert.ok(layout.tabsTop >= layout.headerBottom);
+      assert.equal(layout.bodyTop - layout.tabsBottom, 24);
+      assert.equal(layout.boardTop - layout.tabsBottom, 24);
       if (width === 320) {
         assert.ok(layout.tallyTop > layout.titleTop);
         assert.ok(layout.actionsTop > layout.searchTop);
@@ -3309,6 +6297,7 @@ test("long change titles and completed-card actions remain reachable at sidebar 
     await page.evaluate((next) => {
       __rename("first-change", next);
       __edit("done");
+      __workflows(["verify"]);
     }, name);
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     const card = panel.locator(".change-card").filter({ hasText: name });
@@ -3434,6 +6423,11 @@ test("confirmed deletion removes one change and returns to a refreshed, searched
     assert.equal(await dialog.isVisible(), true);
     await page.evaluate(() => __releaseDelete());
     await panel.getByRole("heading", { name: "Planning 0" }).waitFor();
+    await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length === 2);
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/workflows").length),
+      1,
+    );
     assert.equal(await search.inputValue(), "first");
     assert.equal(await panel.getByRole("button", { name: "first-change" }).count(), 0);
     assert.equal(
@@ -3497,9 +6491,11 @@ test("pre-removal summary cannot restore a deleted card, but a new listing can s
       __recreate("first-change");
       __releaseListing();
     });
-    await panel.getByRole("button", { name: "first-change" }).waitFor();
-    await panel.getByLabel("Search changes").fill("Recreated goal");
-    assert.equal(await panel.getByRole("button", { name: "first-change" }).count(), 1);
+    await panel.getByRole("button", { name: "first-change" }).click();
+    await panel
+      .getByRole("region", { name: "Recorded objective" })
+      .getByText("Recreated goal")
+      .waitFor();
     await page.close();
   });
 });
@@ -3683,7 +6679,7 @@ test("a context switch during uncertain deletion reconciles the original root on
   });
 });
 
-test("completed board and detail independently prepare Verify and Archive without changing stage", async () => {
+test("completed board and detail offer Verify only when configured", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
     await page.goto(url);
@@ -3693,6 +6689,15 @@ test("completed board and detail independently prepare Verify and Archive withou
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     const card = panel.locator(".change-card").filter({ hasText: "first-change" });
     await card.getByRole("button", { name: "archive", exact: true }).waitFor();
+    assert.equal(await card.getByRole("button", { name: "verify", exact: true }).count(), 0);
+    await card.getByRole("button", { name: "first-change", exact: true }).click();
+    const footer = panel.locator(".detail-footer");
+    await footer.getByRole("button", { name: "archive", exact: true }).waitFor();
+    assert.equal(await footer.getByRole("button", { name: "verify", exact: true }).count(), 0);
+    await panel.getByRole("button", { name: "Back to changes" }).click();
+    await page.evaluate(() => __workflows(["verify"]));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await card.getByRole("button", { name: "verify", exact: true }).waitFor({ timeout: 3000 });
     assert.deepEqual(await card.locator(".card-actions button:visible").allTextContents(), [
       "verify",
       "archive",
@@ -3776,6 +6781,83 @@ test("completed board and detail independently prepare Verify and Archive withou
   });
 });
 
+for (const [label, workflows, skill] of [
+  ["ff", ["continue", "ff"], "openspec-ff-change"],
+  ["continue", ["continue"], "openspec-continue-change"],
+  ["propose", ["propose"], "openspec-propose"],
+]) {
+  test(`board and detail Planning primary prepare ${label} for the configured workflows`, async () => {
+    await withPanel(async (browser, url) => {
+      const page = await browser.newPage();
+      await page.goto(`${url}?hold-ready`);
+      const panel = page.frameLocator("iframe");
+      await page.waitForFunction(() => typeof window.__releaseReady === "function");
+      await page.evaluate((configured) => {
+        __workflows(configured);
+        __readiness("pending");
+        __releaseReady();
+      }, workflows);
+      const card = panel.locator(".change-card").filter({ hasText: "first-change" });
+      await card.getByRole("button", { name: label, exact: true }).click({ timeout: 3000 });
+      await card.getByRole("button", { name: "first-change", exact: true }).click();
+      await panel
+        .locator(".detail-footer")
+        .getByRole("button", { name: label, exact: true })
+        .click({ timeout: 3000 });
+      await page.waitForFunction(() => __requests.filter((r) => r.path === "compose").length === 2);
+      const prompts = await page.evaluate(() =>
+        __requests.filter((r) => r.path === "compose").map(({ body }) => body),
+      );
+      for (const prompt of prompts) {
+        assert.equal(prompt.mode, "replace");
+        assert.ok(
+          prompt.text.startsWith(
+            `Use your skill tool to load and invoke the ${skill} skill for OpenSpec change "first-change"`,
+          ),
+          prompt.text,
+        );
+        assert.match(prompt.text, /Goal: Read the proposal/);
+      }
+    });
+  });
+}
+
+test("a previously rendered Planning card keeps its captured ff intent after refresh", async () => {
+  await withPanel(async (browser, url) => {
+    const page = await browser.newPage();
+    await page.goto(`${url}?hold-ready`);
+    const panel = page.frameLocator("iframe");
+    await page.waitForFunction(() => typeof window.__releaseReady === "function");
+    await page.evaluate(() => {
+      __workflows(["ff"]);
+      __readiness("pending");
+      __releaseReady();
+    });
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "first-change" })
+      .getByRole("button", { name: "ff", exact: true })
+      .evaluate(
+        (button) => {
+          window.previousPrimary = button;
+        },
+        undefined,
+        { timeout: 3000 },
+      );
+    await panel.getByRole("searchbox", { name: "Search changes" }).fill("second-change");
+    await page.evaluate(() => __workflows(["continue"]));
+    await panel.getByRole("button", { name: "refresh", exact: true }).click();
+    await panel
+      .locator(".change-card")
+      .filter({ hasText: "second-change" })
+      .getByRole("button", { name: "continue", exact: true })
+      .waitFor({ timeout: 3000 });
+    await panel.locator("html").evaluate(() => window.previousPrimary.click());
+    await page.waitForFunction(() => __requests.some((r) => r.path === "compose"));
+    assert.match(await page.evaluate(() => __draft()), /openspec-ff-change.*"first-change"/);
+  });
+});
+
 test("a refreshed incomplete summary removes Archive from an already open detail", async () => {
   await withPanel(async (browser, url) => {
     const page = await browser.newPage();
@@ -3833,6 +6915,7 @@ test("readiness-only summary changes update focused tab names without losing foc
         __requests.some((item) => item.path === "/tasks") &&
         __requests.some((item) => item.path === "/document"),
     );
+    await page.waitForFunction(() => __requests.filter((r) => r.path === "/document").length >= 4);
     const before = await page.evaluate(
       () => __requests.filter((item) => ["/tasks", "/document"].includes(item.path)).length,
     );
@@ -3995,6 +7078,7 @@ test("focused Retry keeps keyboard focus when a held batch retains a per-change 
     await page.waitForFunction(
       () => __completed.filter((path) => path === "/summaries").length === 2,
     );
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     await retry.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
     assert.equal(await retry.evaluate((node) => node === document.activeElement), true);
     await page.evaluate(() => __theme("light"));
@@ -4152,7 +7236,9 @@ test("long custom tabs scroll within a 320 px panel without hiding fallback Task
       false,
     );
     assert.equal(
-      await panel.locator(".oc-sdk-tabs").evaluate((node) => node.scrollWidth > node.clientWidth),
+      await panel
+        .getByRole("tablist", { name: "Planning artefacts" })
+        .evaluate((node) => node.scrollWidth > node.clientWidth),
       true,
     );
     await custom.focus();
@@ -4174,6 +7260,7 @@ test("custom artefacts with delimiter characters keep their document identities 
     await page.evaluate(() => __collidingLabels());
     await panel.getByRole("button", { name: "refresh", exact: true }).click();
     await page.waitForFunction(() => __completed.filter((p) => p === "/summaries").length >= 2);
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     await panel.getByRole("button", { name: "first-change" }).click();
     await panel.getByRole("tab", { name: /specs:a · Written/ }).waitFor({ timeout: 5000 });
     await panel.getByRole("tab", { name: /specs:a · Written/ }).click();
@@ -4496,6 +7583,7 @@ test("theme precedes first paint and detail fills narrow and expanded widths", a
       "rgb(29, 34, 38)",
     );
     await page.evaluate(() => __theme("light"));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
     assert.equal(
       await frame.locator("html").evaluate((node) => getComputedStyle(node).backgroundColor),
       "rgb(255, 255, 255)",
@@ -4529,6 +7617,10 @@ test("uncertain creation reconciles in the original context and opens the observ
     await panel.getByRole("button", { name: "create", exact: true }).click();
     await panel.getByRole("button", { name: "Inspect change" }).click();
     await panel.locator(".detail").getByRole("heading", { name: "observed-change" }).waitFor();
+    assert.equal(
+      await page.evaluate(() => __requests.filter((r) => r.path === "/workflows").length),
+      1,
+    );
     assert.equal(
       await page.evaluate(() => __requests.filter((item) => item.path === "/create").length),
       1,
@@ -4863,6 +7955,7 @@ test("search keeps its caret across refresh and same-stage cards stay ordered", 
     await page.goto(url);
     const panel = page.frameLocator("iframe");
     const search = panel.getByLabel("Search changes");
+    await panel.getByRole("button", { name: "refresh", exact: true, disabled: false }).waitFor();
     await search.fill("change");
     await search.evaluate((input) => input.setSelectionRange(2, 2));
     await page.evaluate(() => __addSameStage());

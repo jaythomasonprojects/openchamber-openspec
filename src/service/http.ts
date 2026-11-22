@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { rm } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import { createServiceHost } from "@openchamber/sdk";
+import { isChangeName } from "../model.js";
 import { createOpenSpecAdapter } from "./openspec.js";
 import {
   MAX_RESPONSE_BYTES,
@@ -12,8 +15,11 @@ import {
 
 const MAX_BODY_BYTES = 64_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const FOCUS_TTL_MS = 30_000;
 
-function send(response: ServerResponse, status: number, value: Json): void {
+type Focus = { directory: string; change: string };
+
+function send(response: ServerResponse, status: number, value: Json | null): void {
   const encoded = JSON.stringify(value);
   if (Buffer.byteLength(encoded, "utf8") > MAX_RESPONSE_BYTES) {
     const fault = serviceError("RESPONSE_TOO_LARGE", "Service response is too large.", 413);
@@ -53,8 +59,14 @@ function requiredString(body: Json, key: string): string {
 export function createOpenSpecService(
   token: string,
   runner: CommandRunner = runOpenSpec,
-  options: { timeoutMs?: number; remove?: typeof rm } = {},
+  options: {
+    timeoutMs?: number;
+    remove?: typeof rm;
+    emit?: (topic: "focus") => Promise<unknown>;
+  } = {},
 ) {
+  const emit = options.emit ?? createServiceHost({ env: process.env }).emit;
+  let pendingFocus: { target: Focus; expiresAt: number } | null = null;
   return createServer(async (request, response) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
       send(response, 401, {
@@ -64,6 +76,21 @@ export function createOpenSpecService(
     }
     if (request.method === "GET" && request.url === "/health")
       return send(response, 200, { ok: true });
+    if (
+      request.method === "GET" &&
+      (request.url === "/focus" || request.url?.startsWith("/focus?"))
+    ) {
+      const directory = new URL(request.url, "http://localhost").searchParams.get("directory");
+      if (!directory || !isAbsolute(directory))
+        return send(response, 400, {
+          error: serviceError("BAD_DIRECTORY", "Directory must be absolute."),
+        });
+      const pending = pendingFocus;
+      if (pending && Date.now() >= pending.expiresAt) pendingFocus = null;
+      const target = pendingFocus?.target.directory === directory ? pendingFocus.target : null;
+      if (target) pendingFocus = null;
+      return send(response, 200, target);
+    }
     if (request.method !== "POST" || !request.url)
       return send(response, 404, { error: serviceError("NOT_FOUND", "Route not found.", 404) });
     let mutationDispatched = false;
@@ -93,15 +120,34 @@ export function createOpenSpecService(
         }),
       ]).finally(() => clearTimeout(bodyTimer));
       const directory = requiredString(body, "directory");
+      const path = new URL(request.url, "http://localhost").pathname;
+      if (path === "/focus") {
+        if (!isAbsolute(directory))
+          throw serviceError("BAD_DIRECTORY", "Directory must be absolute.");
+        const change = requiredString(body, "change");
+        if (!isChangeName(change)) throw serviceError("BAD_CHANGE", "Change name is invalid.");
+        const target = { directory, change };
+        pendingFocus = { target, expiresAt: Date.now() + FOCUS_TTL_MS };
+        await emit("focus");
+        return send(response, 200, { ok: true });
+      }
       const expectedRoot =
         body.expectedRoot === undefined ? undefined : requiredString(body, "expectedRoot");
       const expectedPlanning =
         body.expectedPlanning === undefined ? undefined : requiredString(body, "expectedPlanning");
       if (expectedPlanning && (expectedPlanning.length > 4096 || expectedPlanning.includes("\0")))
         throw serviceError("BAD_REQUEST", "Invalid planning identity.");
-      const path = new URL(request.url, "http://localhost").pathname;
-      const work =
-        path === "/changes"
+      const validatePlanning = path === "/validate" ? requiredString(body, "planning") : undefined;
+      if (validatePlanning && (validatePlanning.length > 4096 || validatePlanning.includes("\0")))
+        throw serviceError("BAD_REQUEST", "Invalid planning identity.");
+      const work = validatePlanning
+        ? adapter.validate(
+            directory,
+            requiredString(body, "change"),
+            requiredString(body, "expectedRoot"),
+            validatePlanning,
+          )
+        : path === "/changes"
           ? adapter.changes(directory, expectedRoot, expectedPlanning)
           : path === "/summaries"
             ? adapter.summaries(directory, requiredString(body, "expectedRoot"), expectedPlanning)
@@ -141,10 +187,38 @@ export function createOpenSpecService(
                         },
                         expectedPlanning,
                       )
-                    : Promise.resolve({
-                        ok: false as const,
-                        error: serviceError("NOT_FOUND", "Route not found.", 404),
-                      });
+                    : path === "/summary"
+                      ? adapter.summary(
+                          directory,
+                          requiredString(body, "change"),
+                          requiredString(body, "expectedRoot"),
+                          expectedPlanning,
+                        )
+                      : path === "/workflows"
+                        ? adapter.workflows(directory)
+                        : path === "/archived"
+                          ? adapter.archived(
+                              directory,
+                              requiredString(body, "expectedRoot"),
+                              expectedPlanning,
+                            )
+                          : path === "/specs"
+                            ? adapter.specs(
+                                directory,
+                                requiredString(body, "expectedRoot"),
+                                expectedPlanning,
+                              )
+                            : path === "/spec"
+                              ? adapter.spec(
+                                  directory,
+                                  body.spec,
+                                  requiredString(body, "expectedRoot"),
+                                  expectedPlanning,
+                                )
+                              : Promise.resolve({
+                                  ok: false as const,
+                                  error: serviceError("NOT_FOUND", "Route not found.", 404),
+                                });
       let timer: NodeJS.Timeout | undefined;
       const result = await Promise.race([
         work,

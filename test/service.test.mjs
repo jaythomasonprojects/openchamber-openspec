@@ -652,6 +652,423 @@ test("summaries accepts real CLI exit one while keeping a good change", async ()
   });
 });
 
+test("archived lists only archived changes and their task counts from the real CLI", async () => {
+  await withProjects(async (root) => {
+    await fixtureChange(root, "active-change", "Not archived");
+    for (const [name, tasks] of [
+      ["2026-11-20-add-login", "- [x] First\n- [ ] Second\n"],
+      ["2026-11-22-fix-cache", "- [x] Done\n"],
+    ]) {
+      const change = join(root, "openspec", "changes", "archive", name);
+      await mkdir(change, { recursive: true });
+      await writeFile(join(change, "tasks.md"), tasks);
+    }
+    await withService(async (url) => {
+      const listing = await fetch(`${url}/changes`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+        body: JSON.stringify({ directory: root }),
+      });
+      const { planning } = await listing.json();
+      const response = await fetch(`${url}/archived`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+        body: JSON.stringify({ directory: root, expectedRoot: root, expectedPlanning: planning }),
+      });
+      const value = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(value));
+      assert.deepEqual(
+        value.changes.sort((a, b) => a.name.localeCompare(b.name)),
+        [
+          { name: "2026-11-20-add-login", completedTasks: 1, totalTasks: 2 },
+          { name: "2026-11-22-fix-cache", completedTasks: 1, totalTasks: 1 },
+        ],
+      );
+    });
+  });
+});
+
+test("archived rejects malformed, duplicate and wrong-root CLI listings", async (t) => {
+  await withProjects(async (root, other) => {
+    const row = { name: "2026-11-22-fix-cache", completedTasks: 1, totalTasks: 1 };
+    for (const [label, changes, reportedRoot, status, code] of [
+      ["missing list", null, root, 502, "BAD_CLI_OUTPUT"],
+      ["invalid counts", [{ ...row, completedTasks: 2 }], root, 502, "BAD_CLI_OUTPUT"],
+      ["duplicate names", [row, row], root, 502, "BAD_CLI_OUTPUT"],
+      ["wrong root", [row], other, 409, "ROOT_CHANGED"],
+    ]) {
+      await t.test(label, async () => {
+        await withService(
+          async (url) => {
+            const response = await fetch(`${url}/archived`, {
+              method: "POST",
+              headers: { authorization: "Bearer test-token" },
+              body: JSON.stringify({ directory: root, expectedRoot: root }),
+            });
+            assert.deepEqual(
+              [response.status, (await response.json()).error?.code],
+              [status, code],
+            );
+          },
+          async (_directory, args) => {
+            assert.deepEqual(args, ["list", "--archived"]);
+            return {
+              ok: true,
+              value: { root: { path: reportedRoot, source: "nearest" }, changes },
+            };
+          },
+        );
+      });
+    }
+  });
+});
+
+test("specs list and read top-level and nested specs through the real CLI", async () => {
+  await withProjects(async (root) => {
+    const content = `# Example Specification
+
+## Purpose
+
+Describe behaviour for the disposable project without dropping extra sections.
+
+## Requirements
+
+### Requirement: Example works
+
+The example SHALL work.
+
+#### Scenario: Run the example
+
+- **WHEN** the user starts it
+- **THEN** it works
+
+## Additional notes
+
+Keep this section, including Unicode: café.
+`;
+    for (const id of ["public-api", "team/nested"]) {
+      const folder = join(root, "openspec", "specs", id);
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, "spec.md"), id === "team/nested" ? content : content + "\n");
+    }
+    await withService(async (url) => {
+      const headers = { authorization: "Bearer test-token" };
+      const listing = await fetch(`${url}/changes`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ directory: root }),
+      });
+      const { planning } = await listing.json();
+      const scope = { directory: root, expectedRoot: root, expectedPlanning: planning };
+      const specs = await fetch(`${url}/specs`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(scope),
+      });
+      assert.equal(specs.status, 200);
+      assert.deepEqual((await specs.json()).specs, [
+        { id: "public-api", requirementCount: 1 },
+        { id: "team/nested", requirementCount: 1 },
+      ]);
+      for (const id of ["public-api", "team/nested"]) {
+        const response = await fetch(`${url}/spec`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...scope, spec: id }),
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), {
+          id,
+          content: id === "team/nested" ? content : content + "\n",
+        });
+      }
+      const missing = await fetch(`${url}/spec`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...scope, spec: "missing" }),
+      });
+      assert.deepEqual(
+        [missing.status, (await missing.json()).error?.code],
+        [404, "SPEC_UNAVAILABLE"],
+      );
+    });
+  });
+});
+
+test("spec lookup rejects invalid ids, unlisted files and escaped paths", async (t) => {
+  const root = await mockProject("openspec-spec-paths-");
+  try {
+    const specs = join(root, "openspec", "specs");
+    await mkdir(join(specs, "unlisted"), { recursive: true });
+    await mkdir(join(specs, "escaped"));
+    await writeFile(join(specs, "unlisted", "spec.md"), "Not in the listing");
+    await writeFile(join(root, "outside.md"), "Not in the specs tree");
+    await symlink(join(root, "outside.md"), join(specs, "escaped", "spec.md"));
+    for (const [spec, status, code, calls] of [
+      ["-flag", 400, "BAD_SPEC", []],
+      ["team/../unlisted", 400, "BAD_SPEC", []],
+      ["unlisted", 404, "SPEC_UNAVAILABLE", [["list", "--specs"]]],
+      ["escaped", 502, "BAD_SPEC_PATH", [["list", "--specs"]]],
+    ]) {
+      await t.test(spec, async () => {
+        const commands = [];
+        await withService(
+          async (url) => {
+            const response = await fetch(`${url}/spec`, {
+              method: "POST",
+              headers: { authorization: "Bearer test-token" },
+              body: JSON.stringify({ directory: root, expectedRoot: root, spec }),
+            });
+            assert.deepEqual(
+              [response.status, (await response.json()).error?.code],
+              [status, code],
+            );
+            assert.deepEqual(commands, calls);
+          },
+          async (_directory, args) => {
+            commands.push(args);
+            return {
+              ok: true,
+              value: {
+                root: { path: root, source: "nearest" },
+                specs: [{ id: "escaped", requirementCount: 1 }],
+              },
+            };
+          },
+        );
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("both spec routes reject malformed or wrong-root CLI listings", async (t) => {
+  const root = await mockProject("openspec-bad-specs-");
+  const other = await mockProject("openspec-bad-specs-other-");
+  try {
+    const row = { id: "top-level", requirementCount: 2 };
+    for (const [label, specs, reportedRoot, status, code] of [
+      ["missing specs", null, root, 502, "BAD_CLI_OUTPUT"],
+      ["invalid count", [{ ...row, requirementCount: -1 }], root, 502, "BAD_CLI_OUTPUT"],
+      ["duplicate id", [row, row], root, 502, "BAD_CLI_OUTPUT"],
+      ["wrong root", [row], other, 409, "ROOT_CHANGED"],
+    ]) {
+      await t.test(label, async () => {
+        await withService(
+          async (url) => {
+            for (const path of ["/specs", "/spec"]) {
+              const response = await fetch(`${url}${path}`, {
+                method: "POST",
+                headers: { authorization: "Bearer test-token" },
+                body: JSON.stringify({ directory: root, expectedRoot: root, spec: row.id }),
+              });
+              assert.deepEqual(
+                [response.status, (await response.json()).error?.code],
+                [status, code],
+              );
+            }
+          },
+          async (_directory, args) => {
+            assert.deepEqual(args, ["list", "--specs"]);
+            return { ok: true, value: { root: { path: reportedRoot, source: "nearest" }, specs } };
+          },
+        );
+      });
+    }
+  } finally {
+    await Promise.all([root, other].map((path) => rm(path, { recursive: true, force: true })));
+  }
+});
+
+test("summary returns one scoped change from the real CLI", async (t) => {
+  await withProjects(async (root, other) => {
+    await fixtureChange(root, "first-change", "First goal");
+    await fixtureChange(root, "second-change", "Second goal");
+    await withService(async (url) => {
+      const post = async (path, body = {}) => {
+        const response = await fetch(`${url}${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: root, ...body }),
+        });
+        return { status: response.status, value: await response.json() };
+      };
+      const { value: listing } = await post("/changes");
+      const scope = {
+        expectedRoot: listing.root,
+        expectedPlanning: listing.planning,
+        change: "second-change",
+      };
+      await t.test(
+        "returns the requested change in the same shape as a batch summary",
+        async () => {
+          const batch = await post("/summaries", scope);
+          const single = await post("/summary", scope);
+          assert.equal(single.status, 200);
+          assert.equal(single.value.id, "second-change");
+          assert.equal(single.value.goal, "Second goal");
+          assert.deepEqual(
+            single.value,
+            batch.value.changes.find((item) => item.id === "second-change").summary,
+          );
+        },
+      );
+      await t.test("rejects the wrong root", async () => {
+        const result = await post("/summary", {
+          ...scope,
+          expectedRoot: other,
+          expectedPlanning: undefined,
+        });
+        assert.deepEqual([result.status, result.value.error?.code], [409, "ROOT_CHANGED"]);
+      });
+      await t.test("rejects stale planning identity", async () => {
+        const result = await post("/summary", { ...scope, expectedPlanning: "stale" });
+        assert.deepEqual([result.status, result.value.error?.code], [409, "PLANNING_CHANGED"]);
+      });
+      await t.test("rejects an unknown change", async () => {
+        const result = await post("/summary", { ...scope, change: "missing" });
+        assert.deepEqual([result.status, result.value.error?.code], [404, "CHANGE_UNAVAILABLE"]);
+      });
+    });
+  });
+});
+
+test("validate reports valid and invalid changes from the real CLI", async (t) => {
+  await withProjects(async (root, other) => {
+    const change = "check-example";
+    await fixtureChange(root, change, "Validate the example");
+    const directory = join(root, "openspec", "changes", change, "specs", "example");
+    await mkdir(directory, { recursive: true });
+    const spec = join(directory, "spec.md");
+    await writeFile(
+      spec,
+      "## ADDED Requirements\n\n### Requirement: Example\nThe system SHALL work.\n\n#### Scenario: Example\n- **WHEN** it starts\n- **THEN** it works\n",
+    );
+
+    await withService(async (url) => {
+      const post = async (path, body) => {
+        const response = await fetch(`${url}${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: root, ...body }),
+        });
+        return { status: response.status, value: await response.json() };
+      };
+      const { value: listing } = await post("/changes");
+      const { value: otherListing } = await post("/changes", { directory: other });
+      const scope = { change, expectedRoot: root, planning: listing.planning };
+      await t.test("valid delta", async () => {
+        assert.deepEqual(await post("/validate", scope), {
+          status: 200,
+          value: { valid: true, issues: [] },
+        });
+      });
+      await t.test("nonzero exit with validation issues", async () => {
+        await writeFile(spec, "# Malformed delta\n");
+        const { status, value } = await post("/validate", scope);
+        assert.equal(status, 200);
+        assert.equal(value.valid, false);
+        assert.ok(value.issues.length > 1);
+        const issue = value.issues.find(({ path }) => path === "example/spec.md");
+        assert.equal(issue?.level, "ERROR");
+        assert.match(issue.message, /No delta sections found/);
+      });
+      await t.test("wrong root, stale planning identity, and missing change", async () => {
+        for (const [overrides, status, code] of [
+          [{ expectedRoot: other, planning: otherListing.planning }, 409, "ROOT_CHANGED"],
+          [{ planning: "stale" }, 409, "PLANNING_CHANGED"],
+          [{ change: "missing" }, 404, "CHANGE_UNAVAILABLE"],
+        ]) {
+          const result = await post("/validate", { ...scope, ...overrides });
+          assert.deepEqual([result.status, result.value.error?.code], [status, code]);
+        }
+      });
+    });
+  });
+});
+
+test("validate does not report partial results from malformed CLI output", async () => {
+  const root = await mockProject("openspec-validate-");
+  await mkdir(join(root, "openspec", "changes", "check-example"));
+  try {
+    await withService(
+      async (url) => {
+        const headers = { authorization: "Bearer test-token" };
+        const listing = await fetch(`${url}/changes`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ directory: root }),
+        }).then((response) => response.json());
+        const response = await fetch(`${url}/validate`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            directory: root,
+            change: "check-example",
+            expectedRoot: root,
+            planning: listing.planning,
+          }),
+        });
+        const value = await response.json();
+        assert.deepEqual([response.status, value.error?.code], [502, "BAD_CLI_OUTPUT"]);
+      },
+      async (_directory, [command]) => ({
+        ok: true,
+        value: {
+          root: { path: root, source: "nearest" },
+          ...(command === "list"
+            ? { changes: [] }
+            : command === "validate"
+              ? { items: [{ valid: false, issues: [{ level: "ERROR", path: "file" }] }] }
+              : {}),
+        },
+      }),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("focus signals without sharing its target and only a matching directory claims it", async (t) => {
+  const emitted = [];
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  await withService(
+    async (url) => {
+      const first = { directory: "/project", change: "first-change" };
+      const second = { directory: "/other-project", change: "second-change" };
+      const headers = { authorization: "Bearer test-token" };
+      const readFocus = (directory) =>
+        fetch(`${url}/focus?${new URLSearchParams({ directory })}`, { headers }).then((response) =>
+          response.json(),
+        );
+      const setFocus = async (body) => {
+        const response = await fetch(`${url}/focus`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+        assert.equal(response.status, 200);
+        await response.json();
+      };
+      assert.equal(await readFocus(first.directory), null);
+      await setFocus(first);
+      await setFocus(second);
+      assert.deepEqual(emitted, [["focus"], ["focus"]]);
+      now += 29_999;
+      assert.equal(await readFocus(first.directory), null);
+      assert.deepEqual(await readFocus(second.directory), second);
+      assert.equal(await readFocus(second.directory), null);
+      await setFocus(first);
+      now += 30_000;
+      assert.equal(await readFocus(first.directory), null);
+    },
+    undefined,
+    { emit: async (...event) => emitted.push(event) },
+  );
+});
+
 test("slimmer read routes use only their working command and reconcile missing tasks", async () => {
   const root = await mockProject("openspec-slim-");
   const changeRoot = join(root, "openspec", "changes", "slim");
@@ -1785,6 +2202,92 @@ test("creation stays in the validated root after a selected-directory alias move
   });
 });
 
+test("workflow detection follows the global OpenSpec profile without a planning root", async () => {
+  const base = await mkdtemp(join(tempDirectory, "openspec-workflows-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: join(base, "config") };
+  try {
+    await withService(
+      async (url) => {
+        for (const [args, workflows] of [
+          [null, ["propose", "explore", "apply", "update", "sync", "archive"]],
+          [
+            ["set", "workflows", '["ff","verify","archive"]'],
+            ["propose", "explore", "apply", "update", "sync", "archive"],
+          ],
+          [
+            ["set", "profile", "custom"],
+            ["ff", "verify", "sync", "archive"],
+          ],
+        ]) {
+          if (args) await exec("openspec", ["config", ...args], { cwd: base, env });
+          const response = await fetch(`${url}/workflows`, {
+            method: "POST",
+            headers: { authorization: "Bearer test-token" },
+            body: JSON.stringify({ directory: base }),
+          });
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), { workflows });
+        }
+      },
+      async (cwd, args) => {
+        assert.equal(cwd, base);
+        assert.deepEqual(args, ["config", "list"]);
+        const { stdout } = await exec("openspec", [...args, "--json"], { cwd, env });
+        return { ok: true, value: JSON.parse(stdout) };
+      },
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+for (const [label, cli, error] of [
+  [
+    "CLI failure",
+    { ok: false, error: { code: "OPENSPEC_ERROR", message: "Unknown command", status: 422 } },
+    "OPENSPEC_ERROR",
+  ],
+  ["missing profile", { ok: true, value: {} }, "BAD_CLI_OUTPUT"],
+  ["malformed profile", { ok: true, value: { profile: 2 } }, "BAD_CLI_OUTPUT"],
+  [
+    "malformed workflow list",
+    { ok: true, value: { profile: "custom", workflows: "archive" } },
+    "BAD_CLI_OUTPUT",
+  ],
+  [
+    "malformed workflow entry",
+    { ok: true, value: { profile: "core", workflows: ["apply", 2] } },
+    "BAD_CLI_OUTPUT",
+  ],
+  [
+    "unknown workflow",
+    { ok: true, value: { profile: "custom", workflows: ["future", "ff"] } },
+    null,
+  ],
+]) {
+  test(`workflow detection handles ${label}`, async () => {
+    await withService(
+      async (url) => {
+        const response = await fetch(`${url}/workflows`, {
+          method: "POST",
+          headers: { authorization: "Bearer test-token" },
+          body: JSON.stringify({ directory: tempDirectory }),
+        });
+        const value = await response.json();
+        if (error) {
+          assert.equal(response.status, cli.ok ? 502 : 422);
+          assert.equal(value.error.code, error);
+          if (!cli.ok) assert.deepEqual(value.error, cli.error);
+        } else {
+          assert.equal(response.status, 200);
+          assert.deepEqual(value, { workflows: ["ff"] });
+        }
+      },
+      async () => cli,
+    );
+  });
+}
+
 test("creation stays in the validated registered store when its pointer changes", async () => {
   const base = await mkdtemp(join(tempDirectory, "openspec-create-store-race-"));
   const env = {
@@ -2210,5 +2713,7 @@ test("service reads a document only from the selected change", async () => {
 
 test("manifest declares the host-managed OpenSpec service", async () => {
   const manifest = await readFile(new URL("../package.json", import.meta.url), "utf8");
-  assert.equal(parseManifestJson(manifest).ok, true);
+  const parsed = parseManifestJson(manifest);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.manifest.engines?.openchamber, ">=2.7.1");
 });

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenSpec</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      main,
+      .section-content,
+      .status-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+      }
+      main {
+        padding: 8px 12px;
+        overflow-wrap: anywhere;
+      }
+      [hidden] {
+        display: none;
+      }
+      h1,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 1rem;
+      }
+      .flyout-trigger {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .flyout:not([hidden]) {
+        display: grid;
+        gap: 4px;
+        white-space: pre-wrap;
+      }
+      .flyout-heading {
+        font-weight: 600;
+      }
+      .oc-sdk-btn.status-link[data-variant][data-size] {
+        height: auto;
+        padding: 0;
+        line-height: 1.45;
+        border: 0;
+        background: none;
+        box-shadow: none;
+        color: var(--oc-primary-text);
+        text-decoration: underline;
+      }
+      .oc-sdk-btn.status-link:focus-visible {
+        outline: 2px solid var(--oc-focus);
+      }
+      .untrack-link {
+        justify-self: end;
+      }
+      .validation-issues {
+        margin: 0;
+        padding-inline-start: 1.5em;
+      }
+      .validation-issues li + li {
+        margin-top: 4px;
+      }
+      .note {
+        color: var(--oc-muted);
+      }
+      .section-heading,
+      .section-controls,
+      .footer-actions,
+      .card-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card-actions {
+        flex-wrap: wrap;
+      }
+      .footer-actions {
+        margin-inline-start: auto;
+      }
+      .section-controls > :first-child,
+      .footer-actions > span:not([hidden]) {
+        display: flex;
+      }
+      .footer-actions .loading-action button {
+        gap: 0;
+      }
+      .loading-action svg {
+        width: 1em;
+        height: 1em;
+      }
+      .loading-action button[aria-busy="true"] svg {
+        animation: refresh-spin 1s linear infinite;
+      }
+      @keyframes refresh-spin {
+        to {
+          transform: rotate(1turn);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .loading-action button[aria-busy="true"] svg {
+          animation: none;
+          opacity: 0.55;
+        }
+      }
+      .status-card {
+        gap: 4px;
+        padding: 6px;
+        border-radius: var(--oc-radius);
+        background: var(--oc-elevated);
+      }
+      .status-card .section-content {
+        gap: 4px;
+      }
+      .status-card.stale-card,
+      .section-content.refreshing {
+        opacity: 0.7;
+      }
+      .cached-task {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .section-heading h1 {
+        min-width: 0;
+      }
+      .section-heading span {
+        flex: none;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .section-progress {
+        appearance: none;
+        width: 100%;
+        height: 3px;
+        overflow: hidden;
+        border: 0;
+        border-radius: 2px;
+        background: var(--oc-muted-surface);
+        color: var(--oc-primary-text);
+      }
+      .section-progress::-webkit-progress-bar {
+        background: var(--oc-muted-surface);
+      }
+      .section-progress::-webkit-progress-value {
+        background: currentColor;
+      }
+      .section-progress::-moz-progress-bar {
+        background: currentColor;
+      }
+      .section-picker ul {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .section-picker > div {
+        margin-top: 8px;
+      }
+      .section-picker li button {
+        width: 100%;
+        height: auto;
+        min-height: 28px;
+        padding-block: 6px;
+        justify-content: flex-start;
+        white-space: normal;
+        text-align: start;
+      }
+      summary {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        list-style: none;
+      }
+      summary::-webkit-details-marker {
+        display: none;
+      }
+      summary::before {
+        content: "▸";
+      }
+      details[open] > summary::before {
+        content: "▾";
+      }
+      .tasks-label {
+        flex: none;
+      }
+      .section-heading button,
+      .task-title {
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: start;
+      }
+      .task-window {
+        display: grid;
+        gap: 2px;
+        padding: 0;
+        margin: 4px 0 0;
+      }
+      .task-window li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: 4px;
+      }
+      .task-window .flyout {
+        grid-column: 1 / -1;
+      }
+      [data-pointer="coarse"] .card-actions button[data-size] {
+        height: 28px;
+      }
+      [data-pointer="coarse"]
+        :is(.section-picker button, .untrack-link, .section-content > button) {
+        min-height: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script src="status.js"></script>
+  </body>
+</html>

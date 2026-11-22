@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-22
+goal: "Bring the board in line with OpenSpec 2.x: actions follow the configured
+  workflows, and the board can browse archived changes and main specs"

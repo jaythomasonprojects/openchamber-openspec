@@ -7,10 +7,16 @@ export function decodePlanning(value: unknown): string {
   return value;
 }
 export type ListingEntry = { id: string; completedTasks: number; totalTasks: number };
+export type ArchivedChange = { name: string; completedTasks: number; totalTasks: number };
+export type SpecEntry = { id: string; requirementCount: number };
 export type Task = {
   id: string;
   description: string;
   done: boolean;
+};
+export type ValidationResult = {
+  valid: boolean;
+  issues: { level: string; path: string; message: string }[];
 };
 export type DocumentDescriptor = { artifactId: string; selector: string; label: string };
 export const documentKey = (artifactId: string, selector: string): string =>
@@ -26,9 +32,37 @@ export type ChangeMetadata = {
 };
 export type ServiceIssue = { code: string; message: string; status: number; outcome?: "unknown" };
 
+const ALL_WORKFLOWS = [
+  "propose",
+  "explore",
+  "new",
+  "continue",
+  "apply",
+  "update",
+  "ff",
+  "sync",
+  "archive",
+  "bulk-archive",
+  "verify",
+  "onboard",
+] as const;
+export type Workflow = (typeof ALL_WORKFLOWS)[number];
+export const CORE_WORKFLOWS = ["propose", "explore", "apply", "update", "sync", "archive"] as const;
+
+export function isWorkflow(value: unknown): value is Workflow {
+  return ALL_WORKFLOWS.some((name) => name === value);
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid data.");
   return value as Record<string, unknown>;
+}
+
+export function decodeWorkflows(value: unknown): Workflow[] {
+  const { workflows } = record(value);
+  if (!Array.isArray(workflows) || !workflows.every(isWorkflow))
+    throw new Error("Invalid workflows.");
+  return workflows;
 }
 
 function string(value: unknown): string {
@@ -47,6 +81,19 @@ function names(value: unknown): string[] {
   return value.map(string);
 }
 
+export function decodeValidation(value: unknown): ValidationResult {
+  const { valid, issues } = record(value);
+  if (typeof valid !== "boolean" || !Array.isArray(issues))
+    throw new Error("Invalid validation result.");
+  return {
+    valid,
+    issues: issues.map((value) => {
+      const { level, path, message } = record(value);
+      return { level: string(level), path: string(path), message: string(message) };
+    }),
+  };
+}
+
 export function decodeListingEntry(value: unknown, key: "name" | "id" = "id"): ListingEntry {
   const item = record(value);
   const id = string(item[key]);
@@ -55,6 +102,41 @@ export function decodeListingEntry(value: unknown, key: "name" | "id" = "id"): L
   const totalTasks = count(item.totalTasks);
   if (completedTasks > totalTasks) throw new Error("Invalid task count bounds.");
   return { id, completedTasks, totalTasks };
+}
+
+export function decodeArchived(value: unknown): ArchivedChange[] {
+  const { changes } = record(value);
+  if (!Array.isArray(changes)) throw new Error("Invalid archived listing.");
+  const archived = changes.map((value) => {
+    const item = record(value);
+    const name = string(item.name);
+    const completedTasks = count(item.completedTasks);
+    const totalTasks = count(item.totalTasks);
+    if (completedTasks > totalTasks) throw new Error("Invalid task count bounds.");
+    return { name, completedTasks, totalTasks };
+  });
+  if (new Set(archived.map(({ name }) => name)).size !== archived.length)
+    throw new Error("Duplicate archived change.");
+  return archived;
+}
+
+export function isSpecId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/.exec(value)?.[0] === value
+  );
+}
+
+export function decodeSpecs(value: unknown): SpecEntry[] {
+  const { specs } = record(value);
+  if (!Array.isArray(specs)) throw new Error("Invalid spec listing.");
+  const entries = specs.map((value) => {
+    const { id, requirementCount } = record(value);
+    return { id: string(id), requirementCount: count(requirementCount) };
+  });
+  if (new Set(entries.map(({ id }) => id)).size !== entries.length)
+    throw new Error("Duplicate spec.");
+  return entries;
 }
 
 export function decodeListing(value: unknown): {

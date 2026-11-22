@@ -5,46 +5,253 @@
   var OPENCHAMBER_SDK_API_VERSION = 1;
 
   // node_modules/@openchamber/sdk/dist/scrollbar-style.js
+  var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
   var GUEST_SCROLLBAR_CSS = `
 :root {
-  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 40%, transparent);
-  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 65%, transparent);
+  /* Quiet at rest like the app's own thumbs; hover gives a clear grab target. */
+  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 18%, transparent);
+  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 36%, transparent);
   scrollbar-gutter: stable;
 }
 * {
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+:hover, [${GUEST_SCROLLING_ATTRIBUTE}] {
   scrollbar-color: var(--oc-scrollbar-thumb) transparent;
 }
 /* Chromium's standard scrollbar properties otherwise override its pseudo-elements. */
 @supports selector(::-webkit-scrollbar) {
-  * { scrollbar-width: auto; scrollbar-color: auto; }
+  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-width: auto; scrollbar-color: auto; }
   ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
-  :root::-webkit-scrollbar, body::-webkit-scrollbar { background: var(--oc-bg, inherit); }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: var(--oc-scrollbar-thumb);
+    background: transparent;
     border-radius: 999px;
     min-width: 24px;
     min-height: 24px;
   }
+  :hover::-webkit-scrollbar-thumb, [${GUEST_SCROLLING_ATTRIBUTE}]::-webkit-scrollbar-thumb { background: var(--oc-scrollbar-thumb); }
   ::-webkit-scrollbar-thumb:hover { background: var(--oc-scrollbar-thumb-hover); }
   ::-webkit-scrollbar-corner { background: transparent; }
   ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 }
 @media (forced-colors: active) {
-  * { scrollbar-color: auto; }
+  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-color: auto; }
   ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background: CanvasText; }
 }
 `;
+  function installGuestScrollbarActivity(doc) {
+    const root2 = doc.documentElement;
+    if (root2.hasAttribute("data-oc-scrollbar-activity"))
+      return;
+    root2.setAttribute("data-oc-scrollbar-activity", "");
+    const timers = /* @__PURE__ */ new WeakMap();
+    doc.addEventListener("scroll", (event) => {
+      const target = event.target === doc ? root2 : event.target;
+      if (!(target instanceof Element))
+        return;
+      if (!target.hasAttribute("data-oc-scrolling"))
+        target.setAttribute("data-oc-scrolling", "");
+      const pending = timers.get(target);
+      if (pending !== void 0)
+        clearTimeout(pending);
+      timers.set(target, setTimeout(() => {
+        timers.delete(target);
+        target.removeAttribute("data-oc-scrolling");
+      }, 1e3));
+    }, { capture: true, passive: true });
+  }
+  var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
 
   // node_modules/@openchamber/sdk/dist/workspace.js
   var GUEST_STORAGE_KEY_MAX = 128;
   var GUEST_STORAGE_VALUE_BYTES = 65536;
 
+  // node_modules/@openchamber/sdk/dist/shells.js
+  var GUEST_SHELL_ID_MAX = 128;
+  var GUEST_SHELL_OUTPUT_TAIL_MAX = 65536;
+
+  // node_modules/@openchamber/sdk/dist/microphone.js
+  var GUEST_MICROPHONE_SAMPLE_RATE_MIN = 8e3;
+  var GUEST_MICROPHONE_SAMPLE_RATE_MAX = 192e3;
+  var GUEST_MICROPHONE_OPEN_TIMEOUT_MS = 12e4;
+  var createSampleQueue = (capacity) => {
+    const chunks = [];
+    let offset = 0;
+    let queued = 0;
+    return {
+      push: (samples) => {
+        chunks.push(samples);
+        queued += samples.length;
+        while (queued - offset > capacity && chunks.length > 1) {
+          const dropped = chunks.shift();
+          queued -= dropped?.length ?? 0;
+          offset = 0;
+        }
+      },
+      pull: (out) => {
+        let written = 0;
+        while (written < out.length && chunks.length > 0) {
+          const head = chunks[0];
+          const count2 = Math.min(out.length - written, head.length - offset);
+          out.set(head.subarray(offset, offset + count2), written);
+          written += count2;
+          offset += count2;
+          if (offset >= head.length) {
+            chunks.shift();
+            queued -= head.length;
+            offset = 0;
+          }
+        }
+        out.fill(0, written);
+      },
+      clear: () => {
+        chunks.length = 0;
+        offset = 0;
+        queued = 0;
+      },
+      get size() {
+        return queued - offset;
+      }
+    };
+  };
+
+  // node_modules/@openchamber/sdk/dist/status-controls.js
+  var GUEST_STATUS_CONTROLS_MAX = 4;
+  var GUEST_STATUS_CONTROL_ID = /^[a-z][a-z0-9-]{0,39}$/;
+  var GUEST_STATUS_CONTROL_LABEL_MAX = 60;
+  var GUEST_STATUS_CONTROL_OPTIONS_MAX = 16;
+  var GUEST_STATUS_CONTROL_VALUE_MAX = 80;
+  var isControlObject = (value) => Object(value) === value && !Array.isArray(value);
+  var hasOnlyKeys = (value, keys) => Object.keys(value).every((key) => keys.includes(key));
+  var isLabel = (value) => String(value) === value && value.length >= 1 && value.length <= GUEST_STATUS_CONTROL_LABEL_MAX;
+  var isValue = (value) => String(value) === value && value.length >= 1 && value.length <= GUEST_STATUS_CONTROL_VALUE_MAX;
+  var isGuestStatusControls = (controls) => {
+    if (!Array.isArray(controls) || controls.length > GUEST_STATUS_CONTROLS_MAX)
+      return false;
+    const ids = /* @__PURE__ */ new Set();
+    for (const control of controls) {
+      if (!isControlObject(control) || !GUEST_STATUS_CONTROL_ID.test(control.id) || !isLabel(control.label))
+        return false;
+      if (control.disabled !== void 0 && control.disabled !== true && control.disabled !== false)
+        return false;
+      if (ids.has(control.id))
+        return false;
+      ids.add(control.id);
+      if (control.kind === "button") {
+        if (!hasOnlyKeys(control, ["kind", "id", "label", "disabled"]))
+          return false;
+        continue;
+      }
+      if (control.kind !== "select" || !hasOnlyKeys(control, ["kind", "id", "label", "value", "options", "disabled"]))
+        return false;
+      if (!isValue(control.value) || !Array.isArray(control.options) || control.options.length < 1 || control.options.length > GUEST_STATUS_CONTROL_OPTIONS_MAX)
+        return false;
+      const values = /* @__PURE__ */ new Set();
+      for (const option of control.options) {
+        if (!isControlObject(option) || !hasOnlyKeys(option, ["value", "label"]) || !isValue(option.value) || !isLabel(option.label) || values.has(option.value))
+          return false;
+        values.add(option.value);
+      }
+      if (!values.has(control.value))
+        return false;
+    }
+    return true;
+  };
+
+  // node_modules/@openchamber/sdk/dist/manifest.js
+  var GUEST_PROVIDER_LOGO_BYTES_MAX = 1024 * 1024;
+  var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
+  var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
+
+  // node_modules/@openchamber/sdk/dist/session-events.js
+  var GUEST_SESSION_EVENT_TYPES = [
+    "turn-finished",
+    "turn-failed",
+    "permission-asked",
+    "question-asked",
+    "turn-started",
+    "session-created",
+    "session-archived",
+    "session-deleted"
+  ];
+  var SESSION_EVENTS_IDLE_MS = 10 * 6e4;
+  var EVENT_TYPES = new Set(GUEST_SESSION_EVENT_TYPES);
+
+  // node_modules/@openchamber/sdk/dist/service-host.js
+  var SERVICE_SCHEDULE_IDLE_MS = 10 * 6e4;
+  var MENTIONS_IDLE_MS = 10 * 6e4;
+
+  // node_modules/@openchamber/sdk/dist/file-editor.js
+  var GUEST_FILE_EDITOR_CONTENT_MAX = 2e7;
+  var GUEST_FILE_EDITOR_VERSION_MAX = 256;
+  var fileEditorPayloadSize = (value) => "bytes" in value ? value.bytes.byteLength : value.content.length;
+  var sameFileEditorDocument = (left, right) => {
+    if (left.path !== right.path || left.readOnly !== right.readOnly)
+      return false;
+    if (left.encoding === "text" || right.encoding === "text") {
+      return left.encoding === "text" && right.encoding === "text" && left.content === right.content;
+    }
+    if (left.bytes.byteLength !== right.bytes.byteLength)
+      return false;
+    for (let index = 0; index < left.bytes.byteLength; index += 1) {
+      if (left.bytes[index] !== right.bytes[index])
+        return false;
+    }
+    return true;
+  };
+
+  // node_modules/@openchamber/sdk/dist/popover.js
+  var GUEST_POPOVER_ID = /^[A-Za-z0-9_-]{1,80}$/;
+  var GUEST_POPOVER_COORDINATE_MAX = 1e5;
+  var GUEST_POPOVER_WIDTH_MIN = 160;
+  var GUEST_POPOVER_WIDTH_MAX = 640;
+  var GUEST_POPOVER_HEIGHT_MIN = 48;
+  var GUEST_POPOVER_HEIGHT_MAX = 480;
+  var GUEST_POPOVER_DATA_MAX = 16e3;
+  var GUEST_POPOVER_DATA_DEPTH_MAX = 32;
+  var GUEST_POPOVER_SIDES = ["left", "right", "top", "bottom"];
+  var hasBoundedJsonTree = (value, depth = 0, budget = { remaining: GUEST_POPOVER_DATA_MAX }) => {
+    if (--budget.remaining < 0 || depth >= GUEST_POPOVER_DATA_DEPTH_MAX)
+      return false;
+    if (value === null)
+      return true;
+    const children = Array.isArray(value) ? value : Object(value) === value ? Object.values(value) : [];
+    for (const item of children) {
+      if (!hasBoundedJsonTree(item, depth + 1, budget))
+        return false;
+    }
+    return true;
+  };
+  var isFiniteJson = (value) => {
+    if (value === null || value === true || value === false)
+      return true;
+    if (Array.isArray(value))
+      return Object.keys(value).every((key) => /^(0|[1-9]\d*)$/.test(key) && Number(key) < value.length) && value.every(isFiniteJson);
+    if (Object(value) === value) {
+      const prototype = Object.getPrototypeOf(value);
+      return (prototype === null || prototype === Object.prototype) && Object.values(value).every(isFiniteJson);
+    }
+    return String(value) === value || Number.isFinite(value);
+  };
+  var isGuestPopoverRequest = (request) => {
+    try {
+      if (String(request.id) !== request.id || !GUEST_POPOVER_ID.test(request.id) || !Number.isFinite(request.anchor.x) || Math.abs(request.anchor.x) > GUEST_POPOVER_COORDINATE_MAX || !Number.isFinite(request.anchor.y) || Math.abs(request.anchor.y) > GUEST_POPOVER_COORDINATE_MAX || !Number.isFinite(request.anchor.width) || !Number.isFinite(request.anchor.height) || request.anchor.width <= 0 || request.anchor.height <= 0 || request.anchor.width > GUEST_POPOVER_COORDINATE_MAX || request.anchor.height > GUEST_POPOVER_COORDINATE_MAX || !Number.isInteger(request.width) || request.width < GUEST_POPOVER_WIDTH_MIN || request.width > GUEST_POPOVER_WIDTH_MAX || !Number.isInteger(request.height) || request.height < GUEST_POPOVER_HEIGHT_MIN || request.height > GUEST_POPOVER_HEIGHT_MAX || request.side !== void 0 && !GUEST_POPOVER_SIDES.includes(request.side) || request.focus !== void 0 && request.focus !== true && request.focus !== false || !hasBoundedJsonTree(request.data) || !isFiniteJson(request.data))
+        return false;
+      return JSON.stringify(request.data).length <= GUEST_POPOVER_DATA_MAX;
+    } catch {
+      return false;
+    }
+  };
+
   // node_modules/@openchamber/sdk/dist/contract.js
+  var GUEST_BLOCK_ANSWER_MAX = 2e3;
   var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
   var isStartSessionResult = (value) => Boolean(value && "sessionId" in value);
   var isPromptResult = (value) => Boolean(value && "sent" in value && !("sessionId" in value));
+  var GUEST_COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
+  var isGuestCommitSha = (value) => GUEST_COMMIT_SHA.test(value);
   var GUEST_TOAST_MAX = 500;
   var GUEST_CLIPBOARD_TEXT_MAX = 32e3;
   var GUEST_COMPOSE_TEXT_MAX = 16e3;
@@ -62,8 +269,10 @@
   var GUEST_GENERATE_PROMPT_MAX = 64e3;
   var GUEST_GENERATE_SYSTEM_MAX = 8e3;
   var GUEST_GENERATE_OUTPUT_TOKENS_MAX = 4e3;
-  var GUEST_GENERATE_TIMEOUT_MS = 9e4;
+  var GUEST_GENERATE_TIMEOUT_MS = 96e4;
+  var GUEST_GENERATE_LATE_KEEP_MS = 60 * 6e4;
   var GUEST_BADGE_MAX = 999;
+  var GUEST_FRAME_HEIGHT_MAX = 1e4;
   var GUEST_RESOLVE_ERROR_MAX = 500;
   var HOST_REQUEST_ERROR_CODES = [
     "HOST_UNAVAILABLE",
@@ -75,6 +284,8 @@
     "NO_INTEGRATION",
     "NO_SERVICE",
     "SERVICE_FAILED",
+    "REQUEST_FAILED",
+    "RESPONSE_TOO_LARGE",
     "NO_SESSION",
     "SESSION_BUSY",
     "NOT_GRANTED",
@@ -83,7 +294,8 @@
     "FILE_TOO_LARGE",
     "DENIED",
     "NO_MODEL",
-    "MODEL_FAILED"
+    "MODEL_FAILED",
+    "UNSUPPORTED"
   ];
   var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
   var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
@@ -163,6 +375,11 @@
       return null;
     return Math.min(GUEST_BADGE_MAX, Math.max(0, Math.round(count2)));
   };
+  var clampFrameHeight = (height) => {
+    if (!Number.isFinite(height))
+      return 0;
+    return Math.min(GUEST_FRAME_HEIGHT_MAX, Math.max(0, Math.ceil(height)));
+  };
   var isGuestFilePath = (value) => value.length > 0 && value.length <= GUEST_FILE_PATH_MAX && !value.includes("\0") && !value.includes("\\");
   var isGuestRequestPath = (value) => {
     if (!value.startsWith("/") || value.includes("\0") || value.includes("\\") || value.includes("://")) {
@@ -185,6 +402,7 @@
   var isGenerateResult = (value) => Boolean(value && "text" in value && String(value.text) === value.text && !("status" in value));
   var HOST_PUSH_TYPES = /* @__PURE__ */ new Set([
     "workspace",
+    "shells",
     "ready",
     "directory",
     "session",
@@ -193,7 +411,16 @@
     "session-lifecycle",
     "item",
     "resolve",
-    "action"
+    "action",
+    "service-event",
+    "status-control-event",
+    "popover-closed",
+    "file-open",
+    "file-snapshot",
+    "file-saved",
+    "generate-late",
+    "microphone-audio",
+    "microphone-ended"
   ]);
   var asWireRecord = (data) => Object(data) === data ? data : null;
   var isNonEmptyString = (value) => String(value) === value && value.length > 0;
@@ -238,6 +465,8 @@
   };
 
   // node_modules/@openchamber/sdk/dist/host.js
+  var isKeyEvent = (event) => "key" in event && "metaKey" in event && "ctrlKey" in event;
+  var isSaveShortcut = (event) => (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s";
   var HostRequestError = class extends Error {
     code;
     constructor(code, message) {
@@ -248,6 +477,14 @@
   };
   var rejectBadPath = () => Promise.reject(new HostRequestError("BAD_PATH", 'Request path must start with "/" and stay on the declared origin.'));
   var rejectBadFilePath = () => Promise.reject(new HostRequestError("BAD_PATH", `File path must be 1 to ${GUEST_FILE_PATH_MAX} characters without NUL or backslash.`));
+  var deviceStorageScope = (options) => {
+    if (options === void 0)
+      return void 0;
+    if (Object(options) !== options || Array.isArray(options) || options.scope !== void 0 && options.scope !== "instance" && options.scope !== "device") {
+      throw new HostRequestError("HOST_REJECTED", 'Storage scope must be "instance" or "device".');
+    }
+    return options.scope === "device" ? "device" : void 0;
+  };
   var nextId = (n) => {
     n.value += 1;
     return `oc-${n.value}`;
@@ -266,14 +503,30 @@
     const connectionListeners = /* @__PURE__ */ new Set();
     const settingsListeners = /* @__PURE__ */ new Set();
     const itemListeners = /* @__PURE__ */ new Set();
+    const blockListeners = /* @__PURE__ */ new Set();
+    const serviceEventListeners = /* @__PURE__ */ new Set();
+    const statusControlListeners = /* @__PURE__ */ new Set();
+    const popoverClosedListeners = /* @__PURE__ */ new Set();
+    const lateGenerateListeners = /* @__PURE__ */ new Set();
+    const unclaimedLateGenerate = [];
     let resolveHandler = null;
     let actionHandler = null;
+    const fileOpenListeners = /* @__PURE__ */ new Set();
+    const fileSavedListeners = /* @__PURE__ */ new Set();
+    let fileSnapshotHandler = null;
+    let lastFile = null;
+    let saveShortcutInstalled = false;
     const pending = /* @__PURE__ */ new Map();
     const workspaceListeners = /* @__PURE__ */ new Map();
+    const shellsListeners = /* @__PURE__ */ new Map();
     let disposed = false;
     const ids = { value: 0 };
     let lastReady = null;
     let lastLifecycle = null;
+    let popoverPointerActive = false;
+    let popoverFocusActive = false;
+    let popoverActivityReported = null;
+    let microphone = null;
     const lifecycleFromSession = (session) => {
       if (!session)
         return null;
@@ -284,6 +537,11 @@
     };
     const post = (message) => {
       target.parent.postMessage(message, "*");
+    };
+    const listenForLateGenerate = () => {
+      if (disposed || target.parent === target || lateGenerateListeners.size === 0 || lastReady?.features?.lateGenerateResults !== true)
+        return;
+      post({ channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION, type: "generate-late-listen" });
     };
     const emit = (listeners, value) => {
       for (const listener of listeners) {
@@ -308,6 +566,25 @@
           emit([listener], message.payload.snapshot);
         return;
       }
+      if (message.type === "shells") {
+        const listener = shellsListeners.get(message.payload.subscriptionId);
+        if (listener)
+          emit([listener], message.payload.snapshot);
+        return;
+      }
+      if (message.type === "microphone-audio") {
+        microphone?.queue.push(message.payload.samples);
+        return;
+      }
+      if (message.type === "microphone-ended") {
+        const open = microphone;
+        if (!open)
+          return;
+        microphone = null;
+        open.release();
+        emit(open.endedListeners, message.payload.reason);
+        return;
+      }
       if (message.type === "ready") {
         lastReady = message.payload;
         lastLifecycle = lifecycleFromSession(message.payload.session);
@@ -320,6 +597,20 @@
         emit(connectionListeners, message.payload.connection);
         emit(settingsListeners, message.payload.settings);
         emit(itemListeners, message.payload.item);
+        if (message.payload.block)
+          emit(blockListeners, message.payload.block);
+        listenForLateGenerate();
+        return;
+      }
+      if (message.type === "service-event") {
+        emit(serviceEventListeners, message.payload);
+        return;
+      }
+      if (message.type === "generate-late") {
+        if (lateGenerateListeners.size === 0)
+          unclaimedLateGenerate.push(message.payload);
+        else
+          emit(lateGenerateListeners, message.payload);
         return;
       }
       if (message.type === "directory") {
@@ -367,6 +658,14 @@
         emit(itemListeners, message.payload.item);
         return;
       }
+      if (message.type === "status-control-event") {
+        emit(statusControlListeners, message.payload);
+        return;
+      }
+      if (message.type === "popover-closed") {
+        emit(popoverClosedListeners, message.payload);
+        return;
+      }
       if (message.type === "action") {
         const answer = (payload) => {
           if (!disposed)
@@ -387,6 +686,48 @@
           const text2 = (error instanceof Error ? error.message : String(error)).trim();
           answer({ ok: false, error: (text2 || "Action failed.").slice(0, GUEST_RESOLVE_ERROR_MAX) });
         });
+        return;
+      }
+      if (message.type === "file-open") {
+        const next = message.payload;
+        if (lastFile && sameFileEditorDocument(lastFile, next))
+          return;
+        lastFile = next;
+        emit(fileOpenListeners, message.payload);
+        return;
+      }
+      if (message.type === "file-saved") {
+        emit(fileSavedListeners, message.payload.version);
+        return;
+      }
+      if (message.type === "file-snapshot") {
+        const answer = (payload) => {
+          if (!disposed)
+            post({
+              channel: OPENCHAMBER_SDK_CHANNEL,
+              v: OPENCHAMBER_SDK_API_VERSION,
+              type: "file-snapshot-result",
+              id: message.id,
+              payload
+            });
+        };
+        const fail = (text2) => answer({ error: (text2.trim() || "Could not read the edited file.").slice(0, GUEST_RESOLVE_ERROR_MAX) });
+        const handler = fileSnapshotHandler;
+        if (!handler) {
+          fail("This extension does not edit files.");
+          return;
+        }
+        Promise.resolve().then(() => handler(message.payload.purpose)).then((snapshot) => {
+          if (fileEditorPayloadSize(snapshot) > GUEST_FILE_EDITOR_CONTENT_MAX) {
+            fail(`The file is over ${GUEST_FILE_EDITOR_CONTENT_MAX} ${"bytes" in snapshot ? "bytes" : "characters"}.`);
+            return;
+          }
+          if (snapshot.version.length > GUEST_FILE_EDITOR_VERSION_MAX) {
+            fail(`The snapshot version is over ${GUEST_FILE_EDITOR_VERSION_MAX} characters.`);
+            return;
+          }
+          answer({ snapshot: "bytes" in snapshot ? { bytes: snapshot.bytes, version: snapshot.version } : { content: snapshot.content, version: snapshot.version } });
+        }, (error) => fail(error instanceof Error ? error.message : String(error)));
         return;
       }
       if (message.type === "resolve") {
@@ -442,6 +783,127 @@
     };
     const request = (message) => send(message).then(() => void 0);
     const envelope = { channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION };
+    const notify = (message) => {
+      if (!disposed && target.parent !== target)
+        post(message);
+    };
+    const requestFileSave = () => notify({ ...envelope, type: "file-save" });
+    const postMicrophoneClose = () => {
+      if (!disposed && target.parent !== target)
+        post({ ...envelope, type: "microphone-close", id: nextId(ids) });
+    };
+    const openMicrophone = async () => {
+      if (microphone)
+        throw new HostRequestError("HOST_REJECTED", "The microphone is already open in this frame.");
+      if (lastReady?.features?.microphone !== true) {
+        throw new HostRequestError("UNSUPPORTED", "This OpenChamber cannot share the microphone with extensions.");
+      }
+      const AudioContextCtor = globalThis.AudioContext;
+      if (typeof AudioContextCtor !== "function")
+        throw new HostRequestError("UNSUPPORTED", "This frame has no Web Audio.");
+      const context = new AudioContextCtor();
+      if (context.sampleRate < GUEST_MICROPHONE_SAMPLE_RATE_MIN || context.sampleRate > GUEST_MICROPHONE_SAMPLE_RATE_MAX) {
+        void context.close().catch(() => void 0);
+        throw new HostRequestError("UNSUPPORTED", `Audio at ${context.sampleRate} Hz is not supported.`);
+      }
+      const resumed = context.state === "suspended" ? context.resume().catch(() => void 0) : void 0;
+      const queue = createSampleQueue(Math.round(context.sampleRate / 4));
+      const processor = context.createScriptProcessor(1024, 1, 1);
+      processor.onaudioprocess = (event) => queue.pull(event.outputBuffer.getChannelData(0));
+      const destination = context.createMediaStreamDestination();
+      processor.connect(destination);
+      const endedListeners = /* @__PURE__ */ new Set();
+      const open = {
+        queue,
+        endedListeners,
+        release: () => {
+          processor.onaudioprocess = null;
+          processor.disconnect();
+          queue.clear();
+          for (const track of destination.stream.getTracks())
+            track.stop();
+          void context.close().catch(() => void 0);
+        }
+      };
+      microphone = open;
+      try {
+        const result = await send({ ...envelope, type: "microphone-open", id: nextId(ids), payload: { sampleRate: context.sampleRate } }, GUEST_MICROPHONE_OPEN_TIMEOUT_MS);
+        if (!result || !("opened" in result) || result.opened !== true) {
+          throw new HostRequestError("HOST_REJECTED", "Host did not open the microphone.");
+        }
+        await resumed;
+        if (microphone !== open)
+          throw new HostRequestError("DISCONNECTED", "The microphone closed while it was opening.");
+      } catch (error) {
+        if (microphone === open)
+          microphone = null;
+        open.release();
+        postMicrophoneClose();
+        throw error;
+      }
+      return {
+        stream: destination.stream,
+        close: () => {
+          if (microphone !== open)
+            return;
+          microphone = null;
+          open.release();
+          postMicrophoneClose();
+        },
+        onEnded: (listener) => {
+          endedListeners.add(listener);
+          return () => {
+            endedListeners.delete(listener);
+          };
+        }
+      };
+    };
+    const onSaveShortcut = (event) => {
+      if (!isKeyEvent(event) || !isSaveShortcut(event))
+        return;
+      event.preventDefault();
+      requestFileSave();
+    };
+    const onPopoverEscape = (event) => {
+      if (!isKeyEvent(event) || event.key !== "Escape" || lastReady?.surface !== "popover" || !lastReady.popover)
+        return;
+      event.preventDefault();
+      void closePopover(lastReady.popover.id, "escape").catch(() => void 0);
+    };
+    const reportPopoverActivity = () => {
+      const popover = lastReady?.surface === "popover" ? lastReady.popover : void 0;
+      if (!popover)
+        return;
+      const active2 = popoverPointerActive || popoverFocusActive;
+      if (popoverActivityReported === active2)
+        return;
+      popoverActivityReported = active2;
+      void setPopoverAnchorActive(popover.id, active2).catch(() => void 0);
+    };
+    const onPopoverPointerOver = () => {
+      if (lastReady?.surface !== "popover" || popoverPointerActive)
+        return;
+      popoverPointerActive = true;
+      reportPopoverActivity();
+    };
+    const onPopoverPointerOut = (event) => {
+      if (lastReady?.surface !== "popover" || event.relatedTarget !== null || !popoverPointerActive)
+        return;
+      popoverPointerActive = false;
+      reportPopoverActivity();
+    };
+    const onPopoverFocus = () => {
+      if (lastReady?.surface !== "popover" || popoverFocusActive)
+        return;
+      popoverFocusActive = true;
+      reportPopoverActivity();
+    };
+    const onPopoverBlur = () => {
+      if (lastReady?.surface !== "popover" || !popoverFocusActive)
+        return;
+      popoverFocusActive = false;
+      reportPopoverActivity();
+    };
     const requireIdentity = (value, maximum = 1024) => {
       if (!value.trim() || value.length > maximum)
         throw new HostRequestError("HOST_REJECTED", `Identity must contain 1 to ${maximum} characters.`);
@@ -474,6 +936,27 @@
         post({ ...envelope, type: "workspace-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
       };
     };
+    const subscribeShells = async (scope, listener) => {
+      if (scope.kind === "session")
+        requireIdentity(scope.sessionId);
+      if (scope.kind === "project")
+        requireIdentity(scope.projectId);
+      const subscriptionId = nextId(ids);
+      shellsListeners.set(subscriptionId, listener);
+      try {
+        await request({ ...envelope, type: "shells-subscribe", id: nextId(ids), payload: { subscriptionId, scope } });
+      } catch (error) {
+        shellsListeners.delete(subscriptionId);
+        if (!disposed)
+          post({ ...envelope, type: "shells-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
+        throw error;
+      }
+      return () => {
+        if (!shellsListeners.delete(subscriptionId) || disposed)
+          return;
+        post({ ...envelope, type: "shells-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
+      };
+    };
     const storage = async (payload) => {
       if ("key" in payload && (payload.key.length === 0 || payload.key.length > GUEST_STORAGE_KEY_MAX)) {
         throw new HostRequestError("HOST_REJECTED", "Storage key must contain 1 to 128 characters.");
@@ -484,11 +967,22 @@
       if (payload.op === "set" && new TextEncoder().encode(JSON.stringify(payload.value)).length > GUEST_STORAGE_VALUE_BYTES) {
         throw new HostRequestError("HOST_REJECTED", "Storage value exceeds 64 KiB.");
       }
+      if (payload.scope === "device" && lastReady?.features?.deviceStorage !== true) {
+        throw new HostRequestError("UNSUPPORTED", "This host does not support device storage.");
+      }
       const result = await send({ ...envelope, type: "storage", id: nextId(ids), payload });
       if (!result || !("storage" in result) || result.op !== payload.op)
         throw new HostRequestError("HOST_REJECTED", "Host did not return storage data.");
       return result;
     };
+    const closePopover = (id, reason) => lastReady?.features?.popovers !== true && !(lastReady?.surface === "popover" && lastReady.popover?.id === id) ? Promise.reject(new HostRequestError("UNSUPPORTED", "This host does not support popovers.")) : request({ ...envelope, type: "popover-close", id: nextId(ids), payload: reason ? { id, reason } : { id } });
+    const setPopoverAnchorActive = (id, active2) => lastReady?.features?.popovers !== true && !(lastReady?.surface === "popover" && lastReady.popover?.id === id) ? Promise.reject(new HostRequestError("UNSUPPORTED", "This host does not support popovers.")) : request({ ...envelope, type: "popover-anchor", id: nextId(ids), payload: { id, active: active2 } });
+    target.addEventListener("keydown", onPopoverEscape, true);
+    target.addEventListener("pointerover", onPopoverPointerOver);
+    target.addEventListener("pointermove", onPopoverPointerOver);
+    target.addEventListener("pointerout", onPopoverPointerOut);
+    target.addEventListener("focus", onPopoverFocus);
+    target.addEventListener("blur", onPopoverBlur);
     return {
       onAction: (handler) => {
         actionHandler = handler;
@@ -527,23 +1021,64 @@
         if (snapshot.kind === "sessions")
           listener(snapshot);
       }),
+      onRunningShells: (scope, listener) => subscribeShells(scope, listener),
+      readShellOutput: async (shellId, options2) => {
+        requireIdentity(shellId, GUEST_SHELL_ID_MAX);
+        const cursor = options2?.cursor;
+        if (cursor !== void 0 && (!Number.isInteger(cursor) || cursor < 0)) {
+          throw new HostRequestError("HOST_REJECTED", "Shell output cursor must be a non-negative integer.");
+        }
+        const tailBytes = options2?.tailBytes;
+        if (tailBytes !== void 0 && (!Number.isInteger(tailBytes) || tailBytes < 1 || tailBytes > GUEST_SHELL_OUTPUT_TAIL_MAX)) {
+          throw new HostRequestError("HOST_REJECTED", `Shell output tailBytes must be an integer between 1 and ${GUEST_SHELL_OUTPUT_TAIL_MAX}.`);
+        }
+        const result = await send({ ...envelope, type: "shell-output", id: nextId(ids), payload: { shellId, cursor, tailBytes } });
+        const output = result;
+        if (!output || typeof output.output !== "string" || !Number.isFinite(output.cursor)) {
+          throw new HostRequestError("HOST_REJECTED", "Host did not return shell output.");
+        }
+        return output;
+      },
+      stopShell: async (shellId) => {
+        requireIdentity(shellId, GUEST_SHELL_ID_MAX);
+        const result = await send({ ...envelope, type: "shell-stop", id: nextId(ids), payload: { shellId } });
+        if (result?.stopped !== true)
+          throw new HostRequestError("HOST_REJECTED", "Host did not stop the shell.");
+        return { stopped: true };
+      },
       openSession: async (sessionId) => {
         requireIdentity(sessionId);
         await request({ ...envelope, type: "open-session", id: nextId(ids), payload: { sessionId } });
       },
       storage: {
-        get: async (key) => {
-          const result = await storage({ op: "get", key });
+        get: async (key, options2) => {
+          const scope = deviceStorageScope(options2);
+          const payload = { op: "get", key };
+          if (scope)
+            payload.scope = scope;
+          const result = await storage(payload);
           return result.op === "get" && result.found ? result.value : void 0;
         },
-        set: async (key, value) => {
-          await storage({ op: "set", key, value });
+        set: async (key, value, options2) => {
+          const scope = deviceStorageScope(options2);
+          const payload = { op: "set", key, value };
+          if (scope)
+            payload.scope = scope;
+          await storage(payload);
         },
-        delete: async (key) => {
-          await storage({ op: "delete", key });
+        delete: async (key, options2) => {
+          const scope = deviceStorageScope(options2);
+          const payload = { op: "delete", key };
+          if (scope)
+            payload.scope = scope;
+          await storage(payload);
         },
-        keys: async () => {
-          const result = await storage({ op: "keys" });
+        keys: async (options2) => {
+          const scope = deviceStorageScope(options2);
+          const payload = { op: "keys" };
+          if (scope)
+            payload.scope = scope;
+          const result = await storage(payload);
           if (result.op !== "keys")
             throw new HostRequestError("HOST_REJECTED", "Expected storage keys.");
           return result.keys;
@@ -605,6 +1140,52 @@
           itemListeners.delete(listener);
         };
       },
+      onBlock: (listener) => {
+        blockListeners.add(listener);
+        if (lastReady?.block)
+          listener(lastReady.block);
+        return () => {
+          blockListeners.delete(listener);
+        };
+      },
+      onServiceEvent: (listener) => {
+        serviceEventListeners.add(listener);
+        return () => {
+          serviceEventListeners.delete(listener);
+        };
+      },
+      onStatusControl: (listener) => {
+        statusControlListeners.add(listener);
+        return () => {
+          statusControlListeners.delete(listener);
+        };
+      },
+      onPopoverClosed: (listener) => {
+        popoverClosedListeners.add(listener);
+        return () => {
+          popoverClosedListeners.delete(listener);
+        };
+      },
+      setStatusControls: (controls) => {
+        if (lastReady?.features?.statusControls !== true) {
+          return Promise.reject(new HostRequestError("UNSUPPORTED", "This host does not support status controls."));
+        }
+        if (!isGuestStatusControls(controls)) {
+          return Promise.reject(new HostRequestError("HOST_REJECTED", "Status controls must have unique bounded ids and valid selected options."));
+        }
+        return request({ ...envelope, type: "status-controls", id: nextId(ids), payload: { controls } });
+      },
+      openPopover: (payload) => {
+        if (lastReady?.features?.popovers !== true) {
+          return Promise.reject(new HostRequestError("UNSUPPORTED", "This host does not support popovers."));
+        }
+        if (!isGuestPopoverRequest(payload)) {
+          return Promise.reject(new HostRequestError("HOST_REJECTED", "Popover requests need bounded geometry and JSON data."));
+        }
+        return request({ ...envelope, type: "popover-open", id: nextId(ids), payload });
+      },
+      closePopover,
+      setPopoverAnchorActive,
       onResolve: (handler) => {
         resolveHandler = handler;
         return () => {
@@ -634,6 +1215,20 @@
         type: "open-url",
         id: nextId(ids),
         payload: { url }
+      }),
+      openCommit: (sha) => isGuestCommitSha(sha) ? request({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: "open-commit",
+        id: nextId(ids),
+        payload: { sha }
+      }) : Promise.reject(new HostRequestError("HOST_REJECTED", "Commit id must be 7 to 64 hex characters.")),
+      answerBlock: (text2) => request({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: "block-answer",
+        id: nextId(ids),
+        payload: { text: text2.trim().slice(0, GUEST_BLOCK_ANSWER_MAX) }
       }),
       openSurface: (surfaceId) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
@@ -848,6 +1443,16 @@
           return result;
         });
       },
+      onLateGenerateResult: (listener) => {
+        lateGenerateListeners.add(listener);
+        for (const result of unclaimedLateGenerate.splice(0))
+          emit([listener], result);
+        listenForLateGenerate();
+        return () => {
+          lateGenerateListeners.delete(listener);
+        };
+      },
+      openMicrophone,
       setBadge: (count2) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
@@ -855,15 +1460,70 @@
         id: nextId(ids),
         payload: { count: clampBadgeCount(count2) }
       }),
+      setHeight: (height) => request({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: "resize",
+        id: nextId(ids),
+        payload: { height: clampFrameHeight(height) }
+      }),
+      onFileOpen: (listener) => {
+        fileOpenListeners.add(listener);
+        if (!saveShortcutInstalled) {
+          saveShortcutInstalled = true;
+          target.addEventListener("keydown", onSaveShortcut, true);
+        }
+        if (lastFile)
+          listener(lastFile);
+        return () => {
+          fileOpenListeners.delete(listener);
+        };
+      },
+      onFileSnapshot: (handler) => {
+        fileSnapshotHandler = handler;
+        return () => {
+          if (fileSnapshotHandler === handler)
+            fileSnapshotHandler = null;
+        };
+      },
+      onFileSaved: (listener) => {
+        fileSavedListeners.add(listener);
+        return () => {
+          fileSavedListeners.delete(listener);
+        };
+      },
+      reportFileChange: (change) => notify({ ...envelope, type: "file-change", payload: { dirty: change.dirty, edited: change.edited } }),
+      requestFileSave,
+      reportFileUnsupported: () => notify({ ...envelope, type: "file-unsupported" }),
       dispose: () => {
         for (const subscriptionId of workspaceListeners.keys()) {
           post({ ...envelope, type: "workspace-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
         }
         workspaceListeners.clear();
+        for (const subscriptionId of shellsListeners.keys()) {
+          post({ ...envelope, type: "shells-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
+        }
+        shellsListeners.clear();
+        if (microphone) {
+          postMicrophoneClose();
+          microphone.release();
+          microphone = null;
+        }
         disposed = true;
         resolveHandler = null;
         actionHandler = null;
+        fileSnapshotHandler = null;
+        fileOpenListeners.clear();
+        fileSavedListeners.clear();
+        if (saveShortcutInstalled)
+          target.removeEventListener("keydown", onSaveShortcut, true);
         target.removeEventListener("message", onMessage);
+        target.removeEventListener("keydown", onPopoverEscape, true);
+        target.removeEventListener("pointerover", onPopoverPointerOver);
+        target.removeEventListener("pointermove", onPopoverPointerOver);
+        target.removeEventListener("pointerout", onPopoverPointerOut);
+        target.removeEventListener("focus", onPopoverFocus);
+        target.removeEventListener("blur", onPopoverBlur);
         for (const waiter of pending.values()) {
           clearTimeout(waiter.timer);
           waiter.reject(new HostRequestError("HOST_UNAVAILABLE", "Host client was disposed."));
@@ -876,9 +1536,41 @@
         connectionListeners.clear();
         settingsListeners.clear();
         itemListeners.clear();
+        blockListeners.clear();
+        serviceEventListeners.clear();
+        statusControlListeners.clear();
+        popoverClosedListeners.clear();
+        lateGenerateListeners.clear();
+        unclaimedLateGenerate.length = 0;
       }
     };
   };
+
+  // node_modules/@openchamber/sdk/dist/service-providers.js
+  var BROWSER_CONTROL_ACTIONS = [
+    "browser.open",
+    "browser.snapshot",
+    "browser.click",
+    "browser.type",
+    "browser.select",
+    "browser.scroll",
+    "browser.back",
+    "browser.forward",
+    "browser.inspect",
+    "browser.capture",
+    "browser.resize",
+    "browser.close"
+  ];
+  var BROWSER_PROVIDER_IDLE_MS = 10 * 6e4;
+  var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
+  var SOURCE_CONTROL_PROVIDER_IDLE_MS = 10 * 6e4;
+  var NOTIFICATIONS_PROVIDER_IDLE_MS = 10 * 6e4;
+  var TRACKER_PROVIDER_IDLE_MS = 10 * 6e4;
+  var QUOTA_PROVIDER_IDLE_MS = 10 * 6e4;
+
+  // node_modules/@openchamber/sdk/dist/service-surface.js
+  var SURFACE_CONTROLLERS = ["none", "agent", "user"];
+  var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
 
   // node_modules/@openchamber/sdk/dist/ui/theme.js
   var TOKEN_VARS = [
@@ -937,13 +1629,28 @@
     ["--font-mono", "mono"],
     ["--radius", "radius"]
   ];
+  var SYNTAX_TOKEN_VARS = [
+    ["--oc-syntax-keyword", "--syntax-keyword", "syntaxKeyword"],
+    ["--oc-syntax-string", "--syntax-string", "syntaxString"],
+    ["--oc-syntax-number", "--syntax-number", "syntaxNumber"],
+    ["--oc-syntax-function", "--syntax-function", "syntaxFunction"],
+    ["--oc-syntax-type", "--syntax-type", "syntaxType"],
+    ["--oc-syntax-comment", "--syntax-comment", "syntaxComment"],
+    ["--oc-syntax-variable", "--syntax-variable", "syntaxVariable"],
+    ["--oc-syntax-operator", "--syntax-operator", "syntaxOperator"]
+  ];
   var applyHostTheme = (theme, root2) => {
     root2.style.colorScheme = theme.mode;
     for (const [name, key] of TOKEN_VARS) {
       root2.style.setProperty(name, theme.tokens[key]);
     }
+    for (const [alias, hostName, key] of SYNTAX_TOKEN_VARS) {
+      const value = theme.tokens[key] ?? "";
+      root2.style.setProperty(alias, value);
+      root2.style.setProperty(hostName, value);
+    }
     root2.style.setProperty("font-family", theme.tokens.font);
-    root2.style.setProperty("font-size", "0.875rem");
+    root2.style.setProperty("font-size", theme.tokens.fontSize ?? "0.875rem");
     root2.style.setProperty("line-height", "1.45");
     root2.style.setProperty("color", theme.tokens.foreground);
   };
@@ -953,64 +1660,6 @@
       root2.dataset.ocSurface = ctx.surface;
       root2.dataset.ocTheme = ctx.theme.mode;
     }
-  };
-
-  // node_modules/@openchamber/sdk/dist/ui/dom.js
-  var STYLE_ID = "oc-sdk-ui-style";
-  var clearNode = (node) => {
-    while (node.firstChild) {
-      node.removeChild(node.firstChild);
-    }
-  };
-  var ensureStyle = (css) => {
-    const existing = document.getElementById(STYLE_ID);
-    if (existing instanceof HTMLStyleElement) {
-      if (existing.textContent !== css) {
-        existing.textContent = css;
-      }
-      return;
-    }
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = css;
-    document.head.appendChild(style);
-  };
-  var el = (tag, className) => {
-    const node = document.createElement(tag);
-    if (className) {
-      node.className = className;
-    }
-    return node;
-  };
-  var button = (className) => {
-    const node = el("button", className);
-    node.type = "button";
-    return node;
-  };
-  var setText = (node, text2) => {
-    const next = text2 ?? "";
-    if (node.textContent !== next) {
-      node.textContent = next;
-    }
-  };
-  var setAttr = (node, name, value) => {
-    if (value === void 0 || value === null || value === "") {
-      node.removeAttribute(name);
-    } else if (node.getAttribute(name) !== value) {
-      node.setAttribute(name, value);
-    }
-  };
-  var onOutsideClick = (node, handler) => {
-    const listener = (event) => {
-      if (event.target instanceof Node && node.contains(event.target)) {
-        return;
-      }
-      handler();
-    };
-    document.addEventListener("pointerdown", listener, true);
-    return () => {
-      document.removeEventListener("pointerdown", listener, true);
-    };
   };
 
   // node_modules/@openchamber/sdk/dist/ui/style.js
@@ -1055,165 +1704,333 @@
   var active = v("interactive-active", "transparent");
   var selection = v("interactive-selection", "transparent");
   var selectionFg = v("interactive-selection-foreground", "inherit");
-  var focus = v("interactive-focus-ring", "currentColor");
   var primary = v("primary", "currentColor");
   var primaryText = v("primary-text", "inherit");
   var errorText = v("error-text", "inherit");
   var font = v("font-sans", "inherit");
   var mono = v("font-mono", "monospace");
   var radius = v("radius", "9px");
+  var controlRadius = `calc(${radius} - 2px)`;
+  var smallRadius = `calc(${radius} - 4px)`;
   var mix = (color, pct, base = "transparent") => `color-mix(in srgb, ${color} ${pct}%, ${base})`;
-  var focusRing = `box-shadow: 0 0 0 2px ${focus};`;
+  var focusFill = `background-image: linear-gradient(${hover}, ${hover});`;
+  var field = (edge, width = "0.5px") => `box-shadow: inset 0 0 0 ${width} ${edge}, var(--oc-sdk-field-lift);`;
+  var raised = "border-color: var(--oc-sdk-edge); box-shadow: var(--oc-sdk-raised-lift);";
+  var litButton = "box-shadow: var(--oc-sdk-lit);";
+  var darkLift = `inset 0 0.5px 0 0 ${mix(fg, 8)}, 0 1px 2px 0 rgb(0 0 0 / 0.4)`;
+  var THEME_VARS = `
+:root {
+  --oc-sdk-edge: ${mix(fg, 16)};
+  --oc-sdk-field-bg: ${elevated};
+  --oc-sdk-raised-bg: ${bg};
+  --oc-sdk-field-lift: inset 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --oc-sdk-raised-lift: 0 1px 1.5px 0 rgb(0 0 0 / 0.08);
+  --oc-sdk-lit: inset 0 1px 0 0 rgb(255 255 255 / 0.2), 0 1px 1.5px 0 rgb(0 0 0 / 0.1);
+  --oc-sdk-float-edge: rgb(0 0 0 / 0.14);
+  --oc-sdk-float: inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 1px 2px -0.5px rgb(0 0 0 / 0.06), 0 4px 8px -2px rgb(0 0 0 / 0.08), 0 12px 20px -4px rgb(0 0 0 / 0.06);
+}
+:root[data-oc-theme="dark"] {
+  --oc-sdk-edge: ${mix(fg, 14)};
+  --oc-sdk-field-bg: ${mix(bg, 50, elevated)};
+  --oc-sdk-raised-bg: ${elevated};
+  --oc-sdk-field-lift: ${darkLift};
+  --oc-sdk-raised-lift: ${darkLift};
+  --oc-sdk-lit: ${darkLift};
+  --oc-sdk-float-edge: rgb(0 0 0 / 0.55);
+  --oc-sdk-float: inset 0 1px 0 0 rgb(255 255 255 / 0.04), inset 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 8px 16px 0 rgb(0 0 0 / 0.25), 0 4px 8px 0 rgb(0 0 0 / 0.25);
+}`;
   var tone = (name) => {
     const color = v(`status-${name}`, "currentColor");
     return `
 .oc-sdk[data-tone="${name}"], .oc-sdk [data-tone="${name}"] { --oc-sdk-tone: ${color}; --oc-sdk-tone-text: ${v(`${name}-text`, "inherit")}; }`;
   };
-  var UI_CSS = `
-${GUEST_SCROLLBAR_CSS}
-.oc-sdk { box-sizing: border-box; color: ${fg}; font-family: ${font}; font-size: 0.875rem; line-height: 1.45; }
+  var len = (px) => `calc(${px}rem / 14)`;
+  var UI_SIZE_CSS = `
+.oc-sdk { box-sizing: border-box; font-size: 0.875rem; line-height: 1.45; }
 .oc-sdk *, .oc-sdk *::before, .oc-sdk *::after { box-sizing: border-box; }
 /* :where() keeps the reset at zero specificity so every primitive class below overrides it. */
 :where(.oc-sdk) :where(button, input, textarea), :where(button.oc-sdk, input.oc-sdk, textarea.oc-sdk) { font: inherit; color: inherit; margin: 0; }
 :where(.oc-sdk) :where(button), :where(button.oc-sdk) { cursor: pointer; background: none; border: 0; padding: 0; }
 .oc-sdk button:disabled, button.oc-sdk:disabled, .oc-sdk[aria-disabled="true"], .oc-sdk [aria-disabled="true"] { opacity: .5; pointer-events: none; }
-.oc-sdk :focus-visible { outline: none; ${focusRing} }
+
+.oc-sdk-btn { display: inline-flex; align-items: center; justify-content: center; gap: ${len(8)}; height: ${len(32)}; padding: 0 ${len(12)}; border: 1px solid transparent; font-size: 0.875rem; font-weight: 500; line-height: 1; white-space: nowrap; }
+.oc-sdk-btn[data-size="sm"] { gap: ${len(6)}; height: ${len(28)}; padding: 0 ${len(10)}; font-size: 0.8125rem; }
+.oc-sdk-btn[data-size="xs"] { gap: ${len(4)}; height: ${len(24)}; padding: 0 ${len(8)}; font-size: 0.75rem; }
+.oc-sdk-btn[data-loading="true"] { opacity: .5; pointer-events: none; }
+.oc-sdk-btn > .oc-sdk-spinner-ring { width: ${len(14)}; height: ${len(14)}; }
+
+.oc-sdk-field { display: flex; flex-direction: column; gap: ${len(4)}; min-width: 0; }
+.oc-sdk-field-label { font-size: 0.8125rem; font-weight: 500; }
+.oc-sdk-field-note { font-size: 0.75rem; }
+.oc-sdk-input { display: block; width: 100%; min-width: 0; height: ${len(32)}; padding: 0 ${len(10)}; border: 0; font-size: 0.875rem; line-height: 1.45; appearance: none; }
+textarea.oc-sdk-input { height: auto; padding: ${len(8)} ${len(10)}; resize: vertical; }
+
+.oc-sdk-search { position: relative; min-width: 0; }
+.oc-sdk-search .oc-sdk-input { padding-left: ${len(34)}; padding-right: ${len(34)}; }
+.oc-sdk-search-icon { position: absolute; left: ${len(11)}; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.oc-sdk-search-clear { position: absolute; right: ${len(6)}; top: 50%; transform: translateY(-50%); display: none; align-items: center; justify-content: center; width: ${len(24)}; height: ${len(24)}; }
+.oc-sdk-search[data-active="true"] .oc-sdk-search-clear { display: inline-flex; }
+
+.oc-sdk-select { position: relative; display: flex; flex-direction: column; gap: ${len(4)}; min-width: 0; }
+.oc-sdk-trigger { display: inline-flex; align-items: center; gap: ${len(6)}; align-self: flex-start; width: auto; max-width: 100%; min-width: 0; height: ${len(28)}; padding: 0 ${len(10)}; border: 1px solid transparent; font-size: 0.8125rem; text-align: left; }
+.oc-sdk-trigger-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-sdk-trigger-chevron { flex: 0 0 auto; }
+.oc-sdk-popup { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: ${len(2)}; min-width: ${len(160)}; max-width: calc(100vw - ${len(16)}); max-height: min(${len(320)}, calc(100vh - ${len(16)})); overflow: auto; padding: ${len(4)}; border: 1px solid transparent; }
+.oc-sdk-popup-search { flex: 0 0 auto; padding: ${len(2)} ${len(2)} ${len(4)}; }
+.oc-sdk-popup-search .oc-sdk-input { height: ${len(28)}; font-size: 0.8125rem; }
+.oc-sdk-option { display: flex; align-items: center; gap: ${len(8)}; width: 100%; padding: ${len(6)} ${len(8)}; font-size: 0.8125rem; text-align: left; }
+.oc-sdk-option-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-sdk-option-hint { flex: 0 0 auto; font-size: 0.75rem; }
+.oc-sdk-option-check { flex: 0 0 auto; display: inline-flex; width: ${len(14)}; visibility: hidden; }
+.oc-sdk-option[aria-selected="true"] > .oc-sdk-option-check { visibility: visible; }
+.oc-sdk-popup-empty { padding: ${len(8)}; font-size: 0.8125rem; }
+
+.oc-sdk-check { display: inline-flex; align-items: flex-start; gap: ${len(8)}; width: 100%; text-align: left; }
+.oc-sdk-check-box { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: ${len(14)}; height: ${len(14)}; margin-top: ${len(3)}; border: 1px solid transparent; }
+.oc-sdk-check-box > svg { display: none; }
+.oc-sdk-check[aria-checked="true"] .oc-sdk-check-box > svg { display: block; }
+.oc-sdk-check-thumb { flex: 0 0 auto; position: relative; width: ${len(36)}; height: ${len(20)}; --oc-sdk-thumb-travel: ${len(16)}; }
+.oc-sdk-check-thumb::after { content: ""; position: absolute; top: ${len(2)}; left: ${len(2)}; width: ${len(16)}; height: ${len(16)}; }
+.oc-sdk-check-text { display: flex; flex-direction: column; min-width: 0; }
+.oc-sdk-check-label { font-size: 0.875rem; }
+.oc-sdk-check-desc { font-size: 0.75rem; }
+
+.oc-sdk-tabs { display: inline-flex; gap: ${len(2)}; padding: ${len(2)}; max-width: 100%; overflow: auto; }
+.oc-sdk-tab { display: inline-flex; align-items: center; gap: ${len(6)}; height: ${len(28)}; padding: 0 ${len(10)}; border: 1px solid transparent; font-size: 0.8125rem; font-weight: 500; white-space: nowrap; }
+.oc-sdk-tab-count { font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+
+.oc-sdk-badge { display: inline-flex; align-items: center; padding: ${len(1)} ${len(6)}; font-size: ${len(11)}; font-weight: 500; line-height: ${len(16)}; white-space: nowrap; }
+
+.oc-sdk-list { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.oc-sdk-row { display: flex; align-items: center; gap: ${len(8)}; width: 100%; padding: ${len(6)} ${len(8)}; text-align: left; }
+.oc-sdk-row-lead { flex: 0 0 auto; width: ${len(64)}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
+.oc-sdk-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.oc-sdk-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-sdk-row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
+.oc-sdk-row-meta { flex: 0 0 auto; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.oc-sdk-list-empty { padding: ${len(16)} ${len(8)}; text-align: center; font-size: 0.8125rem; }
+
+.oc-sdk-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: ${len(4)}; padding: ${len(40)} ${len(16)}; text-align: center; }
+.oc-sdk-empty-title { margin: 0; font-size: 0.8125rem; font-weight: 600; }
+.oc-sdk-empty-body { margin: 0; max-width: 32rem; font-size: 0.8125rem; }
+.oc-sdk-empty-action { margin-top: ${len(12)}; }
+
+@keyframes oc-sdk-spin { to { transform: rotate(360deg); } }
+.oc-sdk-spinner { display: inline-flex; align-items: center; gap: ${len(8)}; font-size: 0.8125rem; }
+.oc-sdk-spinner-ring { width: ${len(16)}; height: ${len(16)}; border: 2px solid transparent; animation: oc-sdk-spin .8s linear infinite; }
+.oc-sdk-spinner[data-size="sm"] .oc-sdk-spinner-ring { width: ${len(12)}; height: ${len(12)}; }
+
+.oc-sdk-banner { display: flex; align-items: flex-start; gap: ${len(12)}; padding: ${len(8)} ${len(12)}; border: 1px solid transparent; }
+.oc-sdk-banner-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: ${len(2)}; }
+.oc-sdk-banner-title { font-size: 0.8125rem; font-weight: 500; }
+.oc-sdk-banner-body { font-size: 0.8125rem; }
+.oc-sdk-banner-action { flex: 0 0 auto; }
+
+.oc-sdk-separator { display: flex; align-items: center; gap: ${len(8)}; width: 100%; margin: ${len(8)} 0; font-size: 0.75rem; }
+.oc-sdk-separator::before, .oc-sdk-separator::after { content: ""; flex: 1 1 auto; height: 1px; }
+.oc-sdk-separator[data-labeled="false"]::after { display: none; }
+.oc-sdk-popup > .oc-sdk-separator { margin: ${len(4)} 0; }
+
+.oc-sdk-progress { display: flex; flex-direction: column; gap: ${len(4)}; min-width: 0; }
+.oc-sdk-progress-label { display: flex; justify-content: space-between; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.oc-sdk-progress-track { height: ${len(6)}; overflow: hidden; }
+.oc-sdk-progress-fill { height: 100%; transform-origin: left; transition: transform 200ms ease-out; }
+.oc-sdk-progress-value { display: inline-flex; align-items: center; gap: ${len(2)}; }
+.oc-sdk-progress[data-done="true"] .oc-sdk-progress-value { font-weight: 600; }
+
+.oc-sdk-menu { position: relative; display: inline-flex; }
+
+.oc-sdk-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.oc-sdk-text img { display: block; max-width: 100%; margin: ${len(8)} 0; }
+
+/* Under a finger the controls reach the app's touch sizes: rows and options 44px like its sheets, every other
+   control at least 36px. Inputs keep 16px text, below which iOS zooms the page on focus. */
+@media (pointer: coarse) {
+  .oc-sdk-btn, .oc-sdk-input { height: ${len(40)}; }
+  .oc-sdk-btn[data-size="sm"], .oc-sdk-btn[data-size="xs"], .oc-sdk-trigger, .oc-sdk-tab, .oc-sdk-popup-search .oc-sdk-input { height: ${len(36)}; }
+  .oc-sdk-input, .oc-sdk-popup-search .oc-sdk-input { font-size: max(16px, 0.875rem); }
+  .oc-sdk-search-clear { width: ${len(36)}; height: ${len(36)}; right: 0; }
+  .oc-sdk-row, .oc-sdk-option { min-height: ${len(44)}; }
+  .oc-sdk-check { min-height: ${len(36)}; padding: ${len(8)} 0; }
+}
+`;
+  var GUEST_UI_LOOK_CSS = `${THEME_VARS}
+.oc-sdk { color: ${fg}; font-family: ${font}; }
+.oc-sdk :focus-visible, .oc-sdk:focus-visible { outline: none; }
+.oc-sdk :where(button, a[href], [role="button"], [role="tab"], [role="option"]):focus-visible, button.oc-sdk:focus-visible { ${focusFill} }
 .oc-sdk-mono { font-family: ${mono}; }
 .oc-sdk-muted { color: ${muted}; }
 ${tone("success")}${tone("warning")}${tone("error")}${tone("info")}
 .oc-sdk[data-tone="primary"], .oc-sdk [data-tone="primary"] { --oc-sdk-tone: ${primary}; --oc-sdk-tone-text: ${primaryText}; }
 
-.oc-sdk-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 14px; border: 1px solid transparent; border-radius: ${radius}; font-size: 0.875rem; font-weight: 500; line-height: 1; white-space: nowrap; transition: background 150ms ease-out, color 150ms ease-out; }
-.oc-sdk-btn[data-size="sm"] { height: 32px; padding: 0 10px; font-size: 0.8125rem; }
-.oc-sdk-btn[data-size="xs"] { height: 24px; padding: 0 8px; font-size: 0.75rem; border-radius: 6px; }
-.oc-sdk-btn[data-variant="default"] { color: ${primaryText}; background: ${mix(primary, 10, bg)}; border-color: ${mix(primary, 12)}; }
+.oc-sdk-btn { border-radius: ${controlRadius}; transition: background 150ms ease-out, color 150ms ease-out; }
+.oc-sdk-btn[data-size="xs"] { border-radius: ${smallRadius}; }
+.oc-sdk-btn[data-variant="default"] { color: ${primaryText}; background: ${mix(primary, 10, bg)}; border-color: ${mix(primary, 12)}; ${litButton} }
 .oc-sdk-btn[data-variant="default"]:hover { background: ${mix(primary, 16, bg)}; }
-.oc-sdk-btn[data-variant="default"]:active { background: ${mix(primary, 22, bg)}; }
+.oc-sdk-btn[data-variant="default"]:active { background: ${mix(primary, 22, bg)}; box-shadow: none; }
 .oc-sdk-btn[data-variant="secondary"] { background: ${secondary}; color: var(--oc-fg); }
 .oc-sdk-btn[data-variant="secondary"]:hover { background-image: linear-gradient(${hover}, ${hover}); }
 .oc-sdk-btn[data-variant="secondary"]:active { background-image: linear-gradient(${active}, ${active}); }
-.oc-sdk-btn[data-variant="outline"] { background: ${elevated}; color: ${elevatedFg}; border-color: ${border}; }
+.oc-sdk-btn[data-variant="outline"] { background: var(--oc-sdk-raised-bg); color: ${elevatedFg}; ${raised} }
 .oc-sdk-btn[data-variant="outline"]:hover { background-image: linear-gradient(${hover}, ${hover}); }
-.oc-sdk-btn[data-variant="outline"]:active { background-image: linear-gradient(${active}, ${active}); }
+.oc-sdk-btn[data-variant="outline"]:active { background-image: linear-gradient(${active}, ${active}); box-shadow: none; }
 .oc-sdk-btn[data-variant="ghost"] { background: transparent; }
 .oc-sdk-btn[data-variant="ghost"]:hover { background: ${hover}; }
 .oc-sdk-btn[data-variant="ghost"]:active { background: ${active}; }
-.oc-sdk-btn[data-variant="destructive"] { --oc-sdk-tone: ${v("status-error", "red")}; color: ${errorText}; background: ${mix("var(--oc-sdk-tone)", 7, bg)}; border-color: ${mix("var(--oc-sdk-tone)", 12)}; }
+.oc-sdk-btn[data-variant="destructive"] { --oc-sdk-tone: ${v("status-error", "red")}; color: ${errorText}; background: ${mix("var(--oc-sdk-tone)", 7, bg)}; border-color: ${mix("var(--oc-sdk-tone)", 12)}; ${litButton} }
 .oc-sdk-btn[data-variant="destructive"]:hover { background: ${mix("var(--oc-sdk-tone)", 9, bg)}; }
-.oc-sdk-btn[data-variant="destructive"]:active { background: ${mix("var(--oc-sdk-tone)", 11, bg)}; }
-.oc-sdk-btn[data-loading="true"] { opacity: .5; pointer-events: none; }
-.oc-sdk-btn > .oc-sdk-spinner-ring { width: 14px; height: 14px; }
+.oc-sdk-btn[data-variant="destructive"]:active { background: ${mix("var(--oc-sdk-tone)", 11, bg)}; box-shadow: none; }
 
-.oc-sdk-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.oc-sdk-field-label { font-size: 0.8125rem; font-weight: 500; }
-.oc-sdk-field-note { font-size: 0.75rem; color: ${muted}; }
+.oc-sdk-field-note { color: ${muted}; }
 .oc-sdk-field[data-invalid="true"] .oc-sdk-field-note { color: ${errorText}; }
-.oc-sdk-input { display: block; width: 100%; min-width: 0; height: 36px; padding: 0 12px; border: 0; border-radius: ${radius}; background: ${elevated}; color: ${elevatedFg}; font-size: 0.875rem; line-height: 1.45; appearance: none; box-shadow: inset 0 0 0 1px ${mix(border, 60)}; transition: background 150ms ease-out, box-shadow 150ms ease-out; }
-textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
+.oc-sdk-input { border-radius: ${controlRadius}; background: var(--oc-sdk-field-bg); color: ${elevatedFg}; ${field("var(--oc-sdk-edge)")} transition: background 150ms ease-out; }
 .oc-sdk-input::placeholder { color: ${muted}; }
 .oc-sdk-input:hover:not(:focus) { background-image: linear-gradient(${hover}, ${hover}); }
-.oc-sdk-input:focus, .oc-sdk-input:focus-visible { box-shadow: inset 0 0 0 2px ${focus}; }
-.oc-sdk-field[data-invalid="true"] .oc-sdk-input { box-shadow: inset 0 0 0 1px ${v("status-error", "red")}; }
-.oc-sdk-field[data-invalid="true"] .oc-sdk-input:focus { box-shadow: inset 0 0 0 2px ${v("status-error", "red")}; }
+.oc-sdk-input:focus, .oc-sdk-input:focus-visible { ${field(mix(fg, 26), "1px")} }
+.oc-sdk-field[data-invalid="true"] .oc-sdk-input, .oc-sdk-field[data-invalid="true"] .oc-sdk-input:focus { ${field(v("status-error", "red"), "1px")} }
 .oc-sdk-input[data-mono="true"] { font-family: ${mono}; }
 
-.oc-sdk-search { position: relative; min-width: 0; }
-.oc-sdk-search .oc-sdk-input { padding-left: 34px; padding-right: 34px; }
-.oc-sdk-search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: ${muted}; pointer-events: none; }
+.oc-sdk-search-icon { color: ${muted}; }
 .oc-sdk-search[data-active="true"] .oc-sdk-search-icon { color: ${primary}; }
-.oc-sdk-search-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: ${muted}; }
-.oc-sdk-search[data-active="true"] .oc-sdk-search-clear { display: inline-flex; }
+.oc-sdk-search-clear { border-radius: ${smallRadius}; color: ${muted}; }
 .oc-sdk-search-clear:hover { background: ${hover}; color: ${fg}; }
 
-.oc-sdk-select { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.oc-sdk-trigger { display: inline-flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 32px; padding: 0 8px 0 10px; border: 1px solid ${border}; border-radius: 6px; background: ${elevated}; color: ${elevatedFg}; font-size: 0.8125rem; text-align: left; transition: background 150ms ease-out; }
+.oc-sdk-trigger { border-radius: ${controlRadius}; background: var(--oc-sdk-raised-bg); color: ${elevatedFg}; ${raised} transition: background 150ms ease-out; }
 .oc-sdk-trigger:hover { background-image: linear-gradient(${hover}, ${hover}); }
 .oc-sdk-trigger[aria-expanded="true"] { background-image: linear-gradient(${active}, ${active}); }
-.oc-sdk-trigger-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oc-sdk-trigger-value[data-empty="true"] { color: ${muted}; }
-.oc-sdk-trigger-chevron { flex: 0 0 auto; color: ${muted}; }
-.oc-sdk-popup { --surface-foreground: ${elevatedFg}; position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 2px; min-width: 160px; max-width: calc(100vw - 16px); max-height: min(320px, calc(100vh - 16px)); overflow: auto; padding: 4px; border: 1px solid ${mix(border, 60)}; border-radius: 12px; background: ${elevated}; color: ${elevatedFg}; box-shadow: 0 8px 24px ${mix(fg, 12)}; }
-.oc-sdk-popup-search { flex: 0 0 auto; padding: 2px 2px 4px; }
-.oc-sdk-popup-search .oc-sdk-input { height: 32px; font-size: 0.8125rem; }
-.oc-sdk-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 8px; font-size: 0.8125rem; text-align: left; }
+.oc-sdk-trigger-chevron { color: ${muted}; }
+/* The app's floating level: the glass edge (a hairline ring and a lit top line, dark outside and light inside in dark themes) over soft shadows. The outer ring is the border, over the page like the app's. */
+.oc-sdk-popup { --surface-foreground: ${elevatedFg}; border-color: var(--oc-sdk-float-edge); border-radius: 12px; background: ${elevated}; background-clip: padding-box; color: ${elevatedFg}; box-shadow: var(--oc-sdk-float); }
+.oc-sdk-option { border-radius: 8px; }
 .oc-sdk-option[data-active="true"] { background: ${hover}; }
-.oc-sdk-option[aria-selected="true"] { background: ${selection}; color: ${selectionFg}; }
+/* A selected option shows a check mark in the text colour, like the app's own pickers. Options without the mark come
+   from bundles built before it existed and keep the selection fill as their only sign of the choice. */
+.oc-sdk-option[aria-selected="true"]:not([data-mark]) { background: ${selection}; color: ${selectionFg}; }
+.oc-sdk-option-check { color: ${fg}; }
 .oc-sdk-option[data-destructive="true"] { color: ${errorText}; }
 .oc-sdk-option[data-destructive="true"][data-active="true"] { background: ${mix(v("status-error", "red"), 10)}; }
-.oc-sdk-option-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-sdk-option-hint { flex: 0 0 auto; font-size: 0.75rem; color: ${muted}; }
-.oc-sdk-option-check { flex: 0 0 auto; width: 12px; }
-.oc-sdk-popup-empty { padding: 8px; font-size: 0.8125rem; color: ${muted}; }
+.oc-sdk-option-hint { color: ${muted}; }
+.oc-sdk-popup-empty { color: ${muted}; }
 
-.oc-sdk-check { display: inline-flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; }
-.oc-sdk-check-box { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-top: 3px; border: 1px solid ${border}; border-radius: 4px; color: ${primary}; transition: border-color 150ms ease-out; }
-.oc-sdk-check[aria-checked="true"] .oc-sdk-check-box { border-color: ${mix(primary, 65, border)}; }
-.oc-sdk-check-box > svg { display: none; }
-.oc-sdk-check[aria-checked="true"] .oc-sdk-check-box > svg { display: block; }
-.oc-sdk-check-thumb { flex: 0 0 auto; position: relative; width: 36px; height: 20px; border-radius: 9999px; background: ${border}; transition: background 150ms ease-out; }
-.oc-sdk-check-thumb::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 9999px; background: ${bg}; transition: transform 150ms ease-out; }
+/* Checked stays neutral: the mark carries the state, and the primary colour stays with primary actions. */
+.oc-sdk-check-box { border-color: ${border}; border-radius: 4px; color: ${fg}; transition: border-color 150ms ease-out; }
+.oc-sdk-check[aria-checked="true"] .oc-sdk-check-box { border-color: ${mix(fg, 60, border)}; }
+.oc-sdk-check-thumb { border-radius: 9999px; background: ${border}; transition: background 150ms ease-out; }
+.oc-sdk-check-thumb::after { border-radius: 9999px; background: ${bg}; transition: transform 150ms ease-out; }
 .oc-sdk-check[aria-checked="true"] .oc-sdk-check-thumb { background: ${primary}; }
-.oc-sdk-check[aria-checked="true"] .oc-sdk-check-thumb::after { transform: translateX(16px); }
+.oc-sdk-check[aria-checked="true"] .oc-sdk-check-thumb::after { transform: translateX(var(--oc-sdk-thumb-travel, 16px)); }
 .oc-sdk-check:focus-visible { box-shadow: none; }
-.oc-sdk-check:focus-visible .oc-sdk-check-box, .oc-sdk-check:focus-visible .oc-sdk-check-thumb { ${focusRing} }
-.oc-sdk-check-text { display: flex; flex-direction: column; min-width: 0; }
-.oc-sdk-check-label { font-size: 0.875rem; }
-.oc-sdk-check-desc { font-size: 0.75rem; color: ${muted}; }
+.oc-sdk-check:focus-visible .oc-sdk-check-box, .oc-sdk-check:focus-visible .oc-sdk-check-thumb { ${focusFill} }
+.oc-sdk-check-desc { color: ${muted}; }
 
-.oc-sdk-tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; max-width: 100%; overflow: auto; }
-.oc-sdk-tabs[data-track="true"] { background: ${mix(fg, 4)}; }
-.oc-sdk-tab { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; font-size: 0.8125rem; font-weight: 500; color: ${muted}; white-space: nowrap; transition: color 150ms ease-out, background 150ms ease-out; }
+.oc-sdk-tabs { border-radius: 10px; }
+.oc-sdk-tabs[data-track="true"] { background: ${mix(fg, 4)}; box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.16); }
+.oc-sdk-tab { border-radius: 8px; color: ${muted}; transition: color 150ms ease-out, background 150ms ease-out; }
 .oc-sdk-tab:hover { color: ${fg}; }
 .oc-sdk-tab[aria-selected="true"] { color: ${selectionFg}; background: ${selection}; border-color: ${border}; }
-.oc-sdk-tab-count { font-size: 0.75rem; font-variant-numeric: tabular-nums; color: ${muted}; }
+.oc-sdk-tabs[data-track="true"] .oc-sdk-tab[aria-selected="true"] { color: ${elevatedFg}; background: var(--oc-sdk-raised-bg); ${raised} }
+.oc-sdk-tab-count { color: ${muted}; }
 
-.oc-sdk-badge { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 9999px; font-size: 11px; font-weight: 500; line-height: 16px; white-space: nowrap; background: ${hover}; color: ${muted}; }
+/* The app's neutral badge: a step of the text colour, the same in every theme. */
+.oc-sdk-badge { border-radius: 9999px; background: ${mix(fg, 6)}; color: ${muted}; }
 .oc-sdk-badge[data-tone] { color: var(--oc-sdk-tone-text, var(--oc-sdk-tone)); background: ${mix("var(--oc-sdk-tone)", 15)}; }
 
-.oc-sdk-list { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.oc-sdk-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 6px; text-align: left; transition: background 120ms ease-out; }
+.oc-sdk-row { border-radius: 6px; transition: background 120ms ease-out; }
 .oc-sdk-row:hover, .oc-sdk-row[data-active="true"] { background: ${hover}; }
 .oc-sdk-row[aria-selected="true"] { background: ${selection}; color: ${selectionFg}; }
-.oc-sdk-row-lead { flex: 0 0 auto; width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ${mono}; font-size: 0.75rem; color: ${muted}; }
-.oc-sdk-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
-.oc-sdk-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-sdk-row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: ${muted}; }
-.oc-sdk-row-meta { flex: 0 0 auto; font-size: 0.75rem; font-variant-numeric: tabular-nums; color: ${muted}; }
+.oc-sdk-row-lead { font-family: ${mono}; color: ${muted}; }
+.oc-sdk-row-sub { color: ${muted}; }
+.oc-sdk-row-meta { color: ${muted}; }
 .oc-sdk-row[aria-selected="true"] .oc-sdk-row-lead, .oc-sdk-row[aria-selected="true"] .oc-sdk-row-sub, .oc-sdk-row[aria-selected="true"] .oc-sdk-row-meta { color: inherit; opacity: .75; }
-.oc-sdk-list-empty { padding: 16px 8px; text-align: center; font-size: 0.8125rem; color: ${muted}; }
+.oc-sdk-list-empty { color: ${muted}; }
 
-.oc-sdk-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 40px 16px; text-align: center; }
-.oc-sdk-empty-title { margin: 0; font-size: 0.8125rem; font-weight: 600; }
-.oc-sdk-empty-body { margin: 0; max-width: 32rem; font-size: 0.8125rem; color: ${muted}; }
-.oc-sdk-empty-action { margin-top: 12px; }
+.oc-sdk-empty-body { color: ${muted}; }
 
-@keyframes oc-sdk-spin { to { transform: rotate(360deg); } }
-.oc-sdk-spinner { display: inline-flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: ${muted}; }
-.oc-sdk-spinner-ring { width: 16px; height: 16px; border: 2px solid ${border}; border-top-color: ${primary}; border-radius: 9999px; animation: oc-sdk-spin .8s linear infinite; }
-.oc-sdk-spinner[data-size="sm"] .oc-sdk-spinner-ring { width: 12px; height: 12px; }
+.oc-sdk-spinner { color: ${muted}; }
+.oc-sdk-spinner-ring { border-color: ${border}; border-top-color: ${primary}; border-radius: 9999px; }
 
-.oc-sdk-banner { display: flex; align-items: flex-start; gap: 12px; padding: 8px 12px; border: 1px solid ${mix("var(--oc-sdk-tone)", 40)}; border-radius: 8px; background: ${mix("var(--oc-sdk-tone)", 10)}; }
-.oc-sdk-banner-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.oc-sdk-banner-title { font-size: 0.8125rem; font-weight: 500; color: var(--oc-sdk-tone-text, var(--oc-sdk-tone)); }
-.oc-sdk-banner-body { font-size: 0.8125rem; color: ${muted}; }
-.oc-sdk-banner-action { flex: 0 0 auto; }
+/* Set apart by its tint alone, like the app's banners. */
+.oc-sdk-banner { border-color: transparent; border-radius: 8px; background: ${mix("var(--oc-sdk-tone)", 10)}; }
+.oc-sdk-banner-title { color: var(--oc-sdk-tone-text, var(--oc-sdk-tone)); }
+.oc-sdk-banner-body { color: ${muted}; }
 
-.oc-sdk-separator { display: flex; align-items: center; gap: 8px; width: 100%; margin: 8px 0; font-size: 0.75rem; color: ${muted}; }
-.oc-sdk-separator::before, .oc-sdk-separator::after { content: ""; flex: 1 1 auto; height: 1px; background: ${mix(border, 40)}; }
-.oc-sdk-separator[data-labeled="false"]::after { display: none; }
-.oc-sdk-popup > .oc-sdk-separator { margin: 4px 0; }
+.oc-sdk-separator { color: ${muted}; }
+.oc-sdk-separator::before, .oc-sdk-separator::after { background: ${mix(border, 40)}; }
 
-.oc-sdk-progress { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.oc-sdk-progress-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: ${muted}; font-variant-numeric: tabular-nums; }
-.oc-sdk-progress-track { height: 6px; border-radius: 9999px; background: ${border}; overflow: hidden; }
-.oc-sdk-progress-fill { height: 100%; border-radius: 9999px; background: var(--oc-sdk-tone, ${primary}); transform-origin: left; transition: transform 200ms ease-out; }
+.oc-sdk-progress-label { color: ${muted}; }
+/* The app's progress: a groove a step of the text colour, green once done. Older bundles mark done only through aria-valuenow. */
+.oc-sdk-progress-track { border-radius: 9999px; background: ${mix(fg, 6)}; }
+.oc-sdk-progress-fill { border-radius: 9999px; background: var(--oc-sdk-tone, ${primary}); }
+.oc-sdk-progress-track[aria-valuenow="100"] > .oc-sdk-progress-fill:not([data-tone]) { background: ${v("status-success", "currentColor")}; }
+.oc-sdk-progress[data-done="true"] .oc-sdk-progress-value { color: ${v("success-text", "inherit")}; }
 
-.oc-sdk-menu { position: relative; display: inline-flex; }
-
-.oc-sdk-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .oc-sdk-text a { color: ${primaryText}; text-decoration: underline; text-underline-offset: 2px; }
-.oc-sdk-text img { display: block; max-width: 100%; margin: 8px 0; border-radius: 8px; border: 1px solid ${mix(border, 60)}; }
+.oc-sdk-text img { border-radius: 8px; border: 1px solid ${mix(border, 60)}; }
 `;
+  var UI_CSS = `
+${GUEST_SCROLLBAR_CSS}
+${UI_SIZE_CSS}
+${GUEST_UI_LOOK_CSS}`;
+
+  // node_modules/@openchamber/sdk/dist/ui/dom.js
+  var STYLE_ID = "oc-sdk-ui-style";
+  var clearNode = (node) => {
+    while (node.firstChild) {
+      node.removeChild(node.firstChild);
+    }
+  };
+  var ensureStyle = (css) => {
+    const existing = document.getElementById(STYLE_ID);
+    if (existing instanceof HTMLStyleElement) {
+      if (existing.textContent !== css) {
+        existing.textContent = css;
+      }
+      return;
+    }
+    installGuestScrollbarActivity(document);
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = css;
+    document.head.appendChild(style);
+  };
+  var el = (tag, className) => {
+    const node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    return node;
+  };
+  var button = (className) => {
+    const node = el("button", className);
+    node.type = "button";
+    return node;
+  };
+  var setText = (node, text2) => {
+    const next = text2 ?? "";
+    if (node.textContent !== next) {
+      node.textContent = next;
+    }
+  };
+  var setAttr = (node, name, value) => {
+    if (value === void 0 || value === null || value === "") {
+      node.removeAttribute(name);
+    } else if (node.getAttribute(name) !== value) {
+      node.setAttribute(name, value);
+    }
+  };
+  var onOutsideClick = (node, handler) => {
+    const listener = (event) => {
+      if (event.target instanceof Node && node.contains(event.target)) {
+        return;
+      }
+      handler();
+    };
+    document.addEventListener("pointerdown", listener, true);
+    return () => {
+      document.removeEventListener("pointerdown", listener, true);
+    };
+  };
 
   // node_modules/@openchamber/sdk/dist/ui/button.js
   var ring = () => {
@@ -1267,12 +2084,12 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   var mountTextField = (root2, initial) => {
     ensureStyle(UI_CSS);
     let props = initial;
-    const field = el("label", "oc-sdk oc-sdk-field");
+    const field2 = el("label", "oc-sdk oc-sdk-field");
     const caption = el("span", "oc-sdk-field-label");
     const input = props.multiline ? el("textarea", "oc-sdk-input") : el("input", "oc-sdk-input");
     const note = el("span", "oc-sdk-field-note");
-    field.append(caption, input, note);
-    root2.append(field);
+    field2.append(caption, input, note);
+    root2.append(field2);
     const paint = () => {
       setText(caption, props.label);
       caption.hidden = !props.label;
@@ -1288,7 +2105,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       setAttr(input, "placeholder", props.placeholder);
       input.dataset.mono = props.mono ? "true" : "false";
       const invalid2 = Boolean(props.error);
-      field.dataset.invalid = invalid2 ? "true" : "false";
+      field2.dataset.invalid = invalid2 ? "true" : "false";
       input.setAttribute("aria-invalid", invalid2 ? "true" : "false");
       const text2 = props.error ?? props.helper ?? "";
       setText(note, text2);
@@ -1306,7 +2123,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       },
       dispose: () => {
         input.removeEventListener("input", onInput);
-        field.remove();
+        field2.remove();
       }
     };
   };
@@ -1324,6 +2141,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     node.setAttribute("viewBox", "0 0 24 24");
     node.setAttribute("width", String(size));
     node.setAttribute("height", String(size));
+    node.style.width = len(size);
+    node.style.height = len(size);
     node.setAttribute("aria-hidden", "true");
     node.setAttribute("fill", "currentColor");
     if (className) {
@@ -1449,6 +2268,12 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       const hint = el("span", "oc-sdk-option-hint");
       hint.textContent = spec.hint;
       node.append(hint);
+    }
+    if (role === "option") {
+      node.dataset.mark = "check";
+      const check = el("span", "oc-sdk-option-check");
+      check.append(icon("check", 14));
+      node.append(check);
     }
     node.addEventListener("pointerenter", on.hover);
     node.addEventListener("click", on.pick);
@@ -1590,14 +2415,17 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   };
 
   // node_modules/@openchamber/sdk/dist/ui/progress.js
-  var clampProgress = (value) => Number.isFinite(value) ? Math.min(100, Math.max(0, Math.round(value))) : 0;
+  var clampProgress = (value) => Number.isFinite(value) ? Math.min(100, Math.max(0, Math.floor(value))) : 0;
   var mountProgress = (root2, initial) => {
     ensureStyle(UI_CSS);
     let props = initial;
     const node = el("div", "oc-sdk oc-sdk-progress");
     const caption = el("div", "oc-sdk-progress-label");
     const label = el("span");
-    const percent = el("span");
+    const percent = el("span", "oc-sdk-progress-value");
+    const percentText = el("span");
+    const doneMark = icon("check", 14);
+    percent.append(doneMark, percentText);
     caption.append(label, percent);
     const track = el("div", "oc-sdk-progress-track");
     track.setAttribute("role", "progressbar");
@@ -1617,7 +2445,10 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       else
         track.removeAttribute("aria-label");
       setText(label, props.label);
-      setText(percent, `${value}%`);
+      setText(percentText, `${value}%`);
+      const done = value === 100 && (!props.tone || props.tone === "neutral");
+      setAttr(node, "data-done", done ? "true" : null);
+      doneMark.style.display = done ? "" : "none";
       caption.hidden = !props.label;
     };
     paint();
@@ -1771,6 +2602,23 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   function isChangeName(value) {
     return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
   }
+  function resolveTrackedChanges({
+    saved,
+    items,
+    worktreeName,
+    active: active2
+  }) {
+    if (saved !== null) return { changes: saved.filter((name) => active2.has(name)), source: "saved" };
+    for (const { data } of items) {
+      if (data && typeof data === "object" && "kind" in data && data.kind === "change" && "change" in data && typeof data.change === "string" && active2.has(data.change))
+        return { changes: [data.change], source: "item" };
+    }
+    const legacy = items.find(({ id, data }) => data === void 0 && active2.has(id));
+    if (legacy) return { changes: [legacy.id], source: "item" };
+    if (worktreeName !== null && active2.has(worktreeName))
+      return { changes: [worktreeName], source: "worktree" };
+    return { changes: [], source: "none" };
+  }
 
   // src/contracts.ts
   function decodePlanning(value) {
@@ -1779,9 +2627,33 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     return value;
   }
   var documentKey = (artifactId, selector) => JSON.stringify([artifactId, selector]);
+  var ALL_WORKFLOWS = [
+    "propose",
+    "explore",
+    "new",
+    "continue",
+    "apply",
+    "update",
+    "ff",
+    "sync",
+    "archive",
+    "bulk-archive",
+    "verify",
+    "onboard"
+  ];
+  var CORE_WORKFLOWS = ["propose", "explore", "apply", "update", "sync", "archive"];
+  function isWorkflow(value) {
+    return ALL_WORKFLOWS.some((name) => name === value);
+  }
   function record(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid data.");
     return value;
+  }
+  function decodeWorkflows(value) {
+    const { workflows } = record(value);
+    if (!Array.isArray(workflows) || !workflows.every(isWorkflow))
+      throw new Error("Invalid workflows.");
+    return workflows;
   }
   function string(value) {
     if (typeof value !== "string" || !value.length) throw new Error("Invalid string.");
@@ -1796,6 +2668,18 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     if (!Array.isArray(value)) throw new Error("Invalid dependency list.");
     return value.map(string);
   }
+  function decodeValidation(value) {
+    const { valid, issues } = record(value);
+    if (typeof valid !== "boolean" || !Array.isArray(issues))
+      throw new Error("Invalid validation result.");
+    return {
+      valid,
+      issues: issues.map((value2) => {
+        const { level, path, message } = record(value2);
+        return { level: string(level), path: string(path), message: string(message) };
+      })
+    };
+  }
   function decodeListingEntry(value, key = "id") {
     const item = record(value);
     const id = string(item[key]);
@@ -1804,6 +2688,32 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     const totalTasks = count(item.totalTasks);
     if (completedTasks > totalTasks) throw new Error("Invalid task count bounds.");
     return { id, completedTasks, totalTasks };
+  }
+  function decodeArchived(value) {
+    const { changes } = record(value);
+    if (!Array.isArray(changes)) throw new Error("Invalid archived listing.");
+    const archived = changes.map((value2) => {
+      const item = record(value2);
+      const name = string(item.name);
+      const completedTasks = count(item.completedTasks);
+      const totalTasks = count(item.totalTasks);
+      if (completedTasks > totalTasks) throw new Error("Invalid task count bounds.");
+      return { name, completedTasks, totalTasks };
+    });
+    if (new Set(archived.map(({ name }) => name)).size !== archived.length)
+      throw new Error("Duplicate archived change.");
+    return archived;
+  }
+  function decodeSpecs(value) {
+    const { specs } = record(value);
+    if (!Array.isArray(specs)) throw new Error("Invalid spec listing.");
+    const entries2 = specs.map((value2) => {
+      const { id, requirementCount } = record(value2);
+      return { id: string(id), requirementCount: count(requirementCount) };
+    });
+    if (new Set(entries2.map(({ id }) => id)).size !== entries2.length)
+      throw new Error("Duplicate spec.");
+    return entries2;
   }
   function decodeListing(value) {
     const input = record(value);
@@ -1929,7 +2839,10 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   }
   function createClient(host2) {
     async function request(path, body) {
-      const result = await host2.serviceRequest({ method: "POST", path, body: JSON.stringify(body) });
+      return send({ method: "POST", path, body: JSON.stringify(body) });
+    }
+    async function send(payload) {
+      const result = await host2.serviceRequest(payload);
       let value;
       try {
         value = JSON.parse(result.body);
@@ -1960,6 +2873,22 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       return value;
     };
     return {
+      archived: async ({ directory, root: root2, planning }) => decode(
+        await request("/archived", { directory, expectedRoot: root2, expectedPlanning: planning }),
+        decodeArchived
+      ),
+      specs: async ({ directory, root: root2, planning }) => decode(
+        await request("/specs", { directory, expectedRoot: root2, expectedPlanning: planning }),
+        decodeSpecs
+      ),
+      spec: async ({ directory, root: root2, planning }, spec) => {
+        const value = record2(
+          await request("/spec", { directory, expectedRoot: root2, expectedPlanning: planning, spec })
+        );
+        if (value.id !== spec || typeof value.content !== "string") throw invalid();
+        return value.content;
+      },
+      workflows: async (directory) => decode(await request("/workflows", { directory }), decodeWorkflows),
       list: async (directory, expectedRoot, expectedPlanning) => {
         const value = await request("/changes", {
           directory,
@@ -1972,6 +2901,41 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         if (expectedPlanning && listing.planning !== expectedPlanning)
           throw new ServiceRequestError("PLANNING_CHANGED", "OpenSpec planning target changed.");
         return listing;
+      },
+      summary: async (scope, change) => {
+        const value = decode(
+          await request("/summary", {
+            directory: scope.directory,
+            expectedRoot: scope.root,
+            expectedPlanning: scope.planning,
+            change
+          }),
+          decodeSummary
+        );
+        if (value.root !== scope.root)
+          throw new ServiceRequestError("ROOT_CHANGED", "OpenSpec root changed.");
+        if (value.id !== change) throw invalid();
+        return value;
+      },
+      validate: async (scope, change) => decode(
+        await request("/validate", {
+          directory: scope.directory,
+          expectedRoot: scope.root,
+          planning: scope.planning,
+          change
+        }),
+        decodeValidation
+      ),
+      setFocus: async (directory, change) => {
+        if (record2(await request("/focus", { directory, change })).ok !== true) throw invalid();
+      },
+      claimFocus: async (directory) => {
+        const value = await send({ method: "GET", path: "/focus", query: { directory } });
+        if (value === null) return null;
+        const { directory: target, change } = record2(value);
+        if (target !== directory || typeof change !== "string" || !isChangeName(change))
+          throw invalid();
+        return change;
       },
       summaries: async (scope, entries2) => {
         const value = decode(
@@ -2103,6 +3067,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     let disposed = false;
     const scopeKey = (scope) => JSON.stringify([scope.directory, scope.root, scope.planning]);
     const keyFor = (scope, change, kind, artifact = "", selector = "") => JSON.stringify([scope.directory, scope.root, scope.planning, change, kind, artifact, selector]);
+    const changePrefix = (scope, change) => JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
     const active2 = (scope) => !disposed && !!context && scopeKey(context) === scopeKey(scope);
     const state = (entry) => ({
       value: entry.value,
@@ -2113,6 +3078,13 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       generation++;
       cache.clear();
       bytes = 0;
+    }
+    function removeEntries(matches) {
+      for (const [key, entry] of cache)
+        if (matches(key)) {
+          bytes -= entry.bytes;
+          cache.delete(key);
+        }
     }
     function setContext(scope) {
       if (context && scope && scopeKey(context) === scopeKey(scope)) return;
@@ -2164,6 +3136,20 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     return {
       setContext,
       refresh,
+      refreshChanges() {
+        if (!context) return;
+        const browse = changePrefix(context, "");
+        removeEntries((key) => !key.startsWith(browse));
+      },
+      archived(scope) {
+        return read(scope, keyFor(scope, "", "archived"), () => client.archived(scope));
+      },
+      specs(scope) {
+        return read(scope, keyFor(scope, "", "specs"), () => client.specs(scope));
+      },
+      spec(scope, id, retry = false) {
+        return read(scope, keyFor(scope, "", "spec", id), () => client.spec(scope, id), retry);
+      },
       taskState(scope, change) {
         const entry = cache.get(keyFor(scope, change, "tasks"));
         return active2(scope) && entry ? state(entry) : null;
@@ -2184,12 +3170,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         );
       },
       invalidateChange(scope, change) {
-        const prefix = JSON.stringify([scope.directory, scope.root, scope.planning, change]).slice(0, -1) + ",";
-        for (const [key, entry] of cache)
-          if (key.startsWith(prefix)) {
-            bytes -= entry.bytes;
-            cache.delete(key);
-          }
+        const prefix2 = changePrefix(scope, change);
+        removeEntries((key) => key.startsWith(prefix2));
       },
       dispose() {
         disposed = true;
@@ -2198,14 +3180,27 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     };
   }
 
+  // src/panel/workflows.ts
+  async function loadWorkflows(client, directory) {
+    try {
+      return new Set(await client.workflows(directory));
+    } catch (caught) {
+      console.warn("Could not read OpenSpec workflows; using the core workflows.", caught);
+      return new Set(CORE_WORKFLOWS);
+    }
+  }
+  function planningWorkflow(set) {
+    return set.has("ff") ? "ff" : set.has("continue") ? "continue" : "propose";
+  }
+
   // src/panel/workflow.ts
   var stages = [
-    { id: "planning", label: "Planning", action: "propose" },
-    { id: "ready", label: "Ready", action: "apply" },
-    { id: "progress", label: "In Progress", action: "continue" },
-    { id: "complete", label: "Complete", action: "archive" }
+    { id: "planning", label: "Planning" },
+    { id: "ready", label: "Ready" },
+    { id: "progress", label: "In Progress" },
+    { id: "complete", label: "Complete" }
   ];
-  var workflowLabel = (stage) => stages.find((item) => item.id === stage).action;
+  var workflowLabel = (stage, workflows) => stage === "planning" ? planningWorkflow(workflows) : stage === "complete" ? "archive" : "apply";
   var stageLabel = (stage) => stages.find((item) => item.id === stage).label;
 
   // src/panel/primary-action.ts
@@ -2218,7 +3213,9 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     const button2 = mountButton(buttonRoot, {
       label: "propose",
       size: "sm",
-      onClick: () => state?.action("primary")
+      onClick: () => {
+        if (state) state.action(state.workflow);
+      }
     });
     const menu = mountMenu(menuRoot, {
       label: "apply",
@@ -2230,7 +3227,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         opened = null;
         if (!captured || captured.disabled || state?.disabled || captured.id !== state?.id || captured.stage !== state?.stage || id === "worktree" && state?.pending)
           return;
-        captured.action(id === "worktree" ? "worktree" : "primary");
+        captured.action(id === "worktree" ? "worktree" : captured.workflow);
       }
     });
     const trigger = menuRoot.querySelector("button");
@@ -2244,7 +3241,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         const apply3 = next.stage === "ready" || next.stage === "progress";
         buttonRoot.hidden = apply3;
         menuRoot.hidden = !apply3;
-        button2.update({ label: workflowLabel(next.stage), disabled: next.disabled });
+        button2.update({ label: next.workflow, disabled: next.disabled });
         menu.update({
           items: [
             { id: "current", label: "Prepare in current chat", disabled: next.disabled },
@@ -2357,6 +3354,11 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   }
 
   // src/panel/board-view.ts
+  var views = [
+    { id: "changes", label: "Changes" },
+    { id: "archived", label: "Archived" },
+    { id: "specs", label: "Specs" }
+  ];
   function mountBoardView(root2, callbacks) {
     const main = document.createElement("div");
     main.className = "board-shell";
@@ -2370,6 +3372,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     const headingActions = document.createElement("div");
     headingActions.className = "heading-actions";
     const newChangeRoot = document.createElement("span");
+    newChangeRoot.className = "new-change-control";
     const newChange = mountButton(newChangeRoot, {
       label: "new change",
       variant: "default",
@@ -2423,7 +3426,138 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     header.append(heading, toolbar);
     const notices = document.createElement("div");
     notices.className = "board-notices";
-    const board = document.createElement("section");
+    const tabRoot = document.createElement("nav");
+    tabRoot.className = "board-tabs";
+    let view = "changes";
+    const tabs = mountTabs(tabRoot, {
+      items: [...views],
+      activeId: view,
+      onChange: (id) => {
+        const next = views.find((item) => item.id === id);
+        if (next) callbacks.select(next.id);
+      }
+    });
+    const tablist = tabRoot.querySelector('[role="tablist"]');
+    tablist.setAttribute("aria-label", "OpenSpec views");
+    const panes = {
+      changes: document.createElement("section"),
+      archived: document.createElement("section"),
+      specs: document.createElement("section")
+    };
+    const positions = /* @__PURE__ */ new Map();
+    const syncTabs = () => {
+      for (const { id } of views) {
+        const pane = panes[id];
+        const tab = tablist.querySelector(`[data-id="${id}"]`);
+        tab.id = `board-tab-${id}`;
+        tab.setAttribute("aria-controls", pane.id);
+        pane.hidden = view !== id;
+      }
+    };
+    for (const { id } of views) {
+      const pane = panes[id];
+      pane.id = `board-view-${id}`;
+      pane.setAttribute("role", "tabpanel");
+      pane.setAttribute("aria-labelledby", `board-tab-${id}`);
+      pane.addEventListener("focusin", ({ target }) => {
+        if (target instanceof HTMLElement)
+          positions.set(id, { scroll: window.scrollY, focus: target });
+      });
+    }
+    syncTabs();
+    const archivedStatus = document.createElement("div");
+    archivedStatus.className = "notice browse-status";
+    const archivedMessage = document.createElement("span");
+    const archivedRetryRoot = document.createElement("span");
+    const archivedRetry = mountButton(archivedRetryRoot, {
+      label: "refresh",
+      variant: "secondary",
+      size: "sm",
+      onClick: callbacks.retry
+    });
+    const archivedList = document.createElement("ul");
+    archivedList.className = "browse-list";
+    archivedStatus.append(archivedMessage, archivedRetryRoot);
+    panes.archived.append(archivedStatus, archivedList);
+    let lastArchived;
+    let lastArchiveQuery;
+    function updateArchived(state, query) {
+      if (lastArchived === state && lastArchiveQuery === query) return;
+      lastArchived = state;
+      lastArchiveQuery = query;
+      const rows = (state?.value ?? []).map(({ name, completedTasks, totalTasks }) => {
+        const dated = /^(\d{4}-\d{2}-\d{2})-(.+)$/.exec(name);
+        return { name: dated?.[2] ?? name, date: dated?.[1] ?? "", completedTasks, totalTasks };
+      }).filter(({ name }) => name.toLocaleLowerCase().includes(query)).sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name));
+      archivedList.replaceChildren(
+        ...rows.map(({ name, date, completedTasks, totalTasks }) => {
+          const row = document.createElement("li");
+          const title = document.createElement("span");
+          title.textContent = name;
+          const count2 = document.createElement("span");
+          count2.textContent = `${completedTasks} of ${totalTasks} tasks`;
+          count2.className = "browse-meta";
+          row.append(title);
+          if (date) {
+            const time = document.createElement("time");
+            time.dateTime = time.textContent = date;
+            time.className = "browse-meta";
+            row.append(time);
+          }
+          row.append(count2);
+          return row;
+        })
+      );
+      archivedStatus.hidden = !state || rows.length > 0;
+      archivedStatus.classList.toggle("error", !!state?.error);
+      archivedRetryRoot.hidden = !state?.error;
+      archivedMessage.textContent = state?.error?.message ?? (state?.pending ? "Loading archived changes\u2026" : state?.value?.length ? "No matching archived changes." : "No changes are archived.");
+    }
+    const specsStatus = document.createElement("div");
+    specsStatus.className = "notice browse-status";
+    const specsMessage = document.createElement("span");
+    const specsRetryRoot = document.createElement("span");
+    const specsRetry = mountButton(specsRetryRoot, {
+      label: "refresh",
+      variant: "secondary",
+      size: "sm",
+      onClick: callbacks.retry
+    });
+    const specsList = document.createElement("ul");
+    specsList.className = "browse-list spec-list";
+    specsStatus.append(specsMessage, specsRetryRoot);
+    panes.specs.append(specsStatus, specsList);
+    let lastSpecs;
+    let lastSpecQuery;
+    function updateSpecs(state, query) {
+      if (lastSpecs === state && lastSpecQuery === query) return;
+      lastSpecs = state;
+      lastSpecQuery = query;
+      const rows = (state?.value ?? []).filter(({ id }) => id.toLocaleLowerCase().includes(query));
+      specsList.replaceChildren(
+        ...rows.map(({ id, requirementCount }) => {
+          const row = document.createElement("li");
+          const button2 = document.createElement("button");
+          button2.type = "button";
+          button2.dataset.spec = id;
+          button2.className = "spec-row";
+          const name = document.createElement("span");
+          name.textContent = id;
+          const count2 = document.createElement("span");
+          count2.textContent = `${requirementCount} ${requirementCount === 1 ? "requirement" : "requirements"}`;
+          count2.className = "browse-meta";
+          button2.append(name, count2);
+          button2.addEventListener("click", () => callbacks.openSpec(id));
+          row.append(button2);
+          return row;
+        })
+      );
+      specsStatus.hidden = !state || rows.length > 0;
+      specsStatus.classList.toggle("error", !!state?.error);
+      specsRetryRoot.hidden = !state?.error;
+      specsMessage.textContent = state?.error?.message ?? (state?.pending ? "Loading specs\u2026" : state?.value?.length ? "No matching specs." : "No specs exist yet.");
+    }
+    const board = panes.changes;
     board.className = "board";
     const sections = stages.map((stage) => {
       const section = document.createElement("section");
@@ -2437,8 +3571,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       board.append(section);
       return { stage, label, grid, empty };
     });
-    body.append(notices, board);
-    main.append(header, body);
+    body.append(notices, ...Object.values(panes));
+    main.append(header, tabRoot, body);
     root2.append(main);
     let noticesMounted = [];
     let noticeSignature = "";
@@ -2450,7 +3584,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         mountButton(mount, { label, variant: "secondary", size: "sm", onClick: callbacks.retry })
       );
     }
-    function cardFor(item) {
+    function cardFor(item, workflows) {
       let entry = cards.get(item.change.id);
       if (!entry) {
         const node = document.createElement("article");
@@ -2518,13 +3652,14 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       entry.action.update({
         id: change.id,
         stage: change.stage,
+        workflow: workflowLabel(change.stage, workflows),
         disabled: item.unavailable,
         pending: item.pending,
         action: item.action
       });
       entry.explore.update({ disabled: item.unavailable });
       entry.exploreRoot.hidden = change.stage !== "planning";
-      entry.verifyRoot.hidden = change.stage !== "complete";
+      entry.verifyRoot.hidden = change.stage !== "complete" || !workflows.has("verify");
       entry.verify.update({ disabled: item.unavailable });
       entry.status.hidden = !item.stale && !item.unavailable;
       if (item.unavailable) entry.status.textContent = `${change.id} is no longer available.`;
@@ -2536,7 +3671,27 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       setVisible(visible) {
         main.hidden = !visible;
       },
+      resetPositions() {
+        positions.clear();
+      },
+      scrollForChanges() {
+        return view === "changes" ? window.scrollY : positions.get("changes")?.scroll ?? 0;
+      },
+      focusSpec(id) {
+        const button2 = specsList.querySelector(`[data-spec="${CSS.escape(id)}"]`);
+        (button2 ?? tablist.querySelector("#board-tab-specs"))?.focus({
+          preventScroll: true
+        });
+      },
       update(state) {
+        const switched = view !== state.view;
+        const tabHadFocus = switched && tabRoot.contains(document.activeElement);
+        if (switched) {
+          positions.set(view, { scroll: window.scrollY, focus: positions.get(view)?.focus ?? null });
+          view = state.view;
+          tabs.update({ activeId: view });
+          syncTabs();
+        }
         project.textContent = state.directory?.split("/").filter(Boolean).at(-1) ?? "No project selected";
         newChange.update({ disabled: !state.canCreate });
         archive.update({ disabled: !state.canArchive, loading: state.archivePending });
@@ -2593,14 +3748,14 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
           cards.delete(id);
         }
         const query = state.search.trim().toLocaleLowerCase();
+        updateArchived(state.archived, query);
+        updateSpecs(state.specs, query);
         for (const entry of cards.values()) {
-          const change = entry.current.change;
-          if (!`${change.id} ${change.goal ?? ""}`.toLocaleLowerCase().includes(query))
-            entry.node.remove();
+          if (!entry.current.change.id.toLocaleLowerCase().includes(query)) entry.node.remove();
         }
         for (const { stage, label, grid, empty } of sections) {
           const matching = state.cards.filter(
-            ({ change }) => change.stage === stage.id && `${change.id} ${change.goal ?? ""}`.toLocaleLowerCase().includes(query)
+            ({ change }) => change.stage === stage.id && change.id.toLocaleLowerCase().includes(query)
           ).sort((a, b) => a.change.id < b.change.id ? -1 : a.change.id > b.change.id ? 1 : 0);
           label.textContent = `${stage.label} ${matching.length}`;
           for (const child of [...grid.children]) {
@@ -2612,9 +3767,18 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
             if (empty.parentElement !== grid) grid.append(empty);
           } else empty.remove();
           matching.forEach((item, index) => {
-            const node = cardFor(item);
+            const node = cardFor(item, state.workflows);
             if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] ?? null);
           });
+        }
+        if (switched) {
+          const position = positions.get(view);
+          const previous = position?.focus;
+          const fallback = tablist.querySelector('[aria-selected="true"]');
+          (previous?.isConnected ? previous : tabHadFocus ? fallback : null)?.focus({
+            preventScroll: true
+          });
+          window.scrollTo(0, position?.scroll ?? 0);
         }
       },
       dispose() {
@@ -2632,6 +3796,9 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
         refresh.dispose();
         help.dispose();
         search.dispose();
+        tabs.dispose();
+        archivedRetry.dispose();
+        specsRetry.dispose();
         main.remove();
       }
     };
@@ -4950,11 +6117,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     const originalDocument = document2;
     const currentScript = originalDocument.currentScript;
     window2.DocumentFragment;
-    const HTMLTemplateElement = window2.HTMLTemplateElement, Node2 = window2.Node, Element = window2.Element, NodeFilter = window2.NodeFilter;
+    const HTMLTemplateElement = window2.HTMLTemplateElement, Node2 = window2.Node, Element2 = window2.Element, NodeFilter = window2.NodeFilter;
     window2.NamedNodeMap === void 0 && (window2.NamedNodeMap || window2.MozNamedAttrMap);
     window2.HTMLFormElement;
     const DOMParser = window2.DOMParser, trustedTypes = window2.trustedTypes;
-    const ElementPrototype = Element.prototype;
+    const ElementPrototype = Element2.prototype;
     const cloneNode = lookupGetter(ElementPrototype, "cloneNode");
     const remove = lookupGetter(ElementPrototype, "remove");
     const removeAttributeNode = lookupGetter(ElementPrototype, "removeAttributeNode");
@@ -6430,6 +7597,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         action.update({
           id: state.change.id,
           stage: state.change.stage,
+          workflow: workflowLabel(state.change.stage, state.workflows),
           disabled: state.unavailable,
           pending: state.pending,
           action: state.primaryAction
@@ -6437,7 +7605,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         exploreRoot.hidden = state.change.stage !== "planning";
         explore.update({ disabled: state.unavailable });
         deleteAction.update({ disabled: state.unavailable });
-        verifyRoot.hidden = state.change.stage !== "complete";
+        verifyRoot.hidden = state.change.stage !== "complete" || !state.workflows.has("verify");
         verify.update({ disabled: state.unavailable });
         currentOwner = taskArtifact(state.change);
         const items = state.change.artifacts.map((item) => ({
@@ -6540,6 +7708,69 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         tabControl.dispose();
         tasksView.dispose();
         shell.remove();
+      }
+    };
+  }
+
+  // src/panel/spec-view.ts
+  function mountSpecView(root2, callbacks) {
+    const pane = document.createElement("section");
+    pane.className = "detail spec-detail";
+    const header = document.createElement("header");
+    header.className = "detail-header";
+    const controls = document.createElement("div");
+    controls.className = "spec-header";
+    const back = mountButton(controls, {
+      label: "Back to specs",
+      variant: "ghost",
+      size: "sm",
+      onClick: callbacks.close
+    });
+    const refresh = mountButton(controls, {
+      label: "refresh",
+      variant: "ghost",
+      size: "sm",
+      onClick: callbacks.refresh
+    });
+    const title = document.createElement("h1");
+    title.id = "spec-detail-title";
+    pane.setAttribute("aria-labelledby", title.id);
+    header.append(controls, title);
+    const content = document.createElement("div");
+    content.className = "detail-content";
+    content.tabIndex = 0;
+    content.setAttribute("role", "region");
+    content.setAttribute("aria-label", "Spec document");
+    const doc = mountDocumentView(content, { openUrl: callbacks.openUrl });
+    pane.append(header, content);
+    root2.append(pane);
+    return {
+      update(id, state, loading, error) {
+        if (id !== title.textContent) {
+          title.textContent = id;
+          content.scrollTop = 0;
+        }
+        refresh.update({ loading });
+        const text2 = state?.value ?? null;
+        const issue = state?.error?.message ?? error;
+        doc.update({
+          text: text2 ?? "",
+          format: "markdown",
+          hasContent: text2 !== null,
+          status: text2 === null && !issue ? "Loading spec\u2026" : null,
+          error: issue,
+          retry: callbacks.retry,
+          canRetry: !loading && !state?.pending
+        });
+      },
+      focusBack() {
+        controls.querySelector("button")?.focus({ preventScroll: true });
+      },
+      dispose() {
+        doc.dispose();
+        back.dispose();
+        refresh.dispose();
+        pane.remove();
       }
     };
   }
@@ -7026,15 +8257,134 @@ Please report this to https://github.com/markedjs/marked.`, e) {
   }
 
   // src/panel/archive-prompt.ts
-  var archiveAllPrompt = `Archive all completed OpenSpec changes in this session's project/worktree.
+  var sequentialPrompt = `Archive all completed OpenSpec changes in this session's project/worktree.
 
 Run openspec list --json for a fresh active-change listing and resolve its OpenSpec planning context, honouring declared stores and the selected CLI root. Inspect each change with openspec status --change "<name>" --json and current CLI-reported task counts. Only changes with every applicable planning artefact done or explicitly skipped, a positive task total, and all tasks complete qualify. Skip unfinished, zero-task, unavailable or unreadable changes. Never use an incomplete-work warning override or infer successful verification from a Complete card or task counts.
 
 Use your skill tool to load and invoke the openspec-archive-change skill for each qualifying named change sequentially. Recheck completion before each archive and assess spec sync against the current main specs after any preceding archive. Preserve the skill's prerequisites, sync assessment, user choices and blockers; ask its required questions rather than treating this bulk request as permission to bypass them. Do not implement unfinished work or automatically resolve blockers.
 
 Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`;
+  function archiveAllPrompt(workflows) {
+    if (!workflows.has("bulk-archive")) return sequentialPrompt;
+    return `Archive all completed OpenSpec changes in this session's project/worktree.
 
-  // src/panel/worktree.ts
+Use your skill tool to load and invoke the openspec-bulk-archive-change skill. Before its selection step, run openspec list --json and openspec status --change "<name>" --json for each change. A change qualifies only when every applicable planning artefact is done or explicitly skipped and it has a positive task total with all tasks complete. When the skill asks which changes to archive, offer only qualifying changes and recommend all of them. Skip any selected change that does not qualify; never use an incomplete-work override or infer verification from task counts.
+
+Preserve the skill's spec-sync assessment, user choices and blockers. Report archived, skipped and blocked changes with reasons. If none qualify, make no OpenSpec mutations and report that outcome.`;
+  }
+
+  // src/panel/prompts.ts
+  function actionPrompt(change, intent) {
+    const target = `OpenSpec change "${change.id}"`;
+    const goal = change.goal?.trim() ? `
+Goal: ${change.goal}` : "";
+    if (intent === "explore")
+      return `Use your skill tool to load and invoke the openspec-explore skill for ${target}.${goal}
+
+Investigate the goal, relevant code, options and trade-offs for ${target}. Discuss findings without file changes or implementation. If no goal is recorded, inspect existing context and ask the user to clarify it if necessary; do not invent a goal.`;
+    if (change.stage === "planning")
+      return `Use your skill tool to load and invoke the openspec-propose skill for ${target} (existing change).${goal}
+
+Inspect ${target}'s status and current metadata. Preserve existing decisions and any recorded goal; only if current metadata has no goal, establish and record a concise goal from existing change context. Ask the user for clarification if the goal is unclear. Finish planning this existing scaffold and complete missing planning artefacts using OpenSpec's artefact instructions. Do not create another change or implement code. If the skill requires new-change creation, explain the conflict rather than creating another change.`;
+    if (change.stage === "ready" || change.stage === "progress") {
+      const progress = change.stage === "progress" ? `
+${change.completedTasks} of ${change.totalTasks} tasks complete. Pick up where implementation left off and complete the remaining tasks.` : "";
+      return `Use your skill tool to load and invoke the openspec-apply-change skill for ${target}.${progress}
+
+Complete all remaining tasks in ${target}, then verify the implementation against its change artefacts. Resolve any issues found and verify again until all tasks are complete and verification passes. If blocked, report the blocker rather than marking unfinished work complete.`;
+    }
+    if (intent === "verify")
+      return `Use your skill tool to load and invoke the openspec-verify-change skill for ${target}.`;
+    return `Use your skill tool to load and invoke the openspec-archive-change skill for ${target}.`;
+  }
+  function planningPrompt(change, intent) {
+    const target = `OpenSpec change "${change.id}"`;
+    const goal = change.goal?.trim() ? `
+Goal: ${change.goal}` : "";
+    if (intent === "ff")
+      return `Use your skill tool to load and invoke the openspec-ff-change skill for ${target} (existing change).${goal}
+
+Create every remaining planning artefact for ${target}, preserving existing decisions and any recorded goal. Do not create another change or implement code.`;
+    if (intent === "continue")
+      return `Use your skill tool to load and invoke the openspec-continue-change skill for ${target} (existing change).${goal}
+
+Write the next planning artefact for ${target}, preserving existing decisions and any recorded goal. Do not implement code.`;
+    return `Use your skill tool to load and invoke the openspec-update-change skill for ${target}.${goal}
+
+Revise ${target}'s existing planning artefacts as I describe and keep them consistent with each other. If I have not described a revision, ask me what to change. Do not edit code.`;
+  }
+
+  // src/panel/tracked-change.ts
+  var prefix = "session-change:";
+  var readBatchSize = 32;
+  async function readTrackedChanges(host2, sessionId) {
+    const value = await host2.storage.get(`${prefix}${sessionId}`);
+    if (!value || typeof value !== "object" || !("changes" in value) || !Array.isArray(value.changes))
+      return null;
+    if (!value.changes.every((name) => typeof name === "string" && isChangeName(name)))
+      throw new Error("Invalid tracked OpenSpec changes.");
+    return [...new Set(value.changes)];
+  }
+  function resolveSessionChanges(sessionId, sessions, saved, active2) {
+    const candidate = sessions?.sessions.find(({ id }) => id === sessionId);
+    const coverage = sessions?.coverage.find(({ directory }) => directory === candidate?.directory);
+    if (saved === null && candidate && coverage?.state !== "ready") return null;
+    return resolveTrackedChanges({
+      saved,
+      items: candidate?.items ?? [],
+      worktreeName: candidate?.worktree?.name ?? null,
+      active: active2
+    }).changes;
+  }
+  async function updateTrackedChanges(host2, sessionId, current, seed, update) {
+    try {
+      if (!current()) return false;
+      const saved = await readTrackedChanges(host2, sessionId);
+      if (!current()) return false;
+      const base = saved ?? await seed();
+      if (!current()) return false;
+      if (base === null) throw new Error("The session's directory coverage is not ready.");
+      const changes = update(base);
+      if (saved && changes === saved) return true;
+      const keys = (await host2.storage.keys()).filter((key) => key.startsWith(prefix));
+      if (keys.length >= 1900) {
+        const choices = [];
+        for (let i = 0; i < keys.length; i += readBatchSize) {
+          if (!current()) return false;
+          const batch = keys.slice(i, i + readBatchSize);
+          const values = await Promise.all(
+            batch.map(async (key) => ({ key, value: await host2.storage.get(key) }))
+          );
+          for (const { key, value } of values) {
+            if (value && typeof value === "object" && "savedAt" in value && typeof value.savedAt === "number" && Number.isFinite(value.savedAt))
+              choices.push({ key, savedAt: value.savedAt });
+          }
+        }
+        choices.sort((left, right) => left.savedAt - right.savedAt);
+        for (const { key } of choices.slice(0, 100)) {
+          if (!current()) return false;
+          await host2.storage.delete(key);
+        }
+      }
+      if (!current()) return false;
+      await host2.storage.set(`${prefix}${sessionId}`, { changes, savedAt: Date.now() });
+      return true;
+    } catch (caught) {
+      console.warn("Could not save the tracked OpenSpec change.", caught);
+      return false;
+    }
+  }
+  function appendTrackedChange(host2, sessionId, change, current, seed) {
+    return updateTrackedChanges(
+      host2,
+      sessionId,
+      current,
+      seed,
+      (choices) => choices.includes(change) ? choices : [...choices, change]
+    );
+  }
+
+  // src/panel/project.ts
   async function ready(read, subscribe) {
     const initial = await read();
     if (initial.state === "ready") return initial;
@@ -7067,31 +8417,36 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       off?.();
     }
   }
-  async function inspectWorktreeDestination(host2, directory, name) {
+  async function findProject(host2, directory) {
     const projects = await ready(
       () => host2.listProjects(),
       (listener) => host2.onProjects(listener)
     );
-    const owners = projects.projects.filter((project2) => project2.directory === directory);
+    const owners = projects.projects.filter((project) => project.directory === directory);
     if (!owners.length) {
       const mappings = await Promise.all(
-        projects.projects.map(async (project2) => ({
-          project: project2,
+        projects.projects.map(async (project) => ({
+          project,
           trees: await ready(
-            () => host2.listWorktrees(project2.id),
-            (listener) => host2.onWorktrees(project2.id, listener)
+            () => host2.listWorktrees(project.id),
+            (listener) => host2.onWorktrees(project.id, listener)
           )
         }))
       );
       owners.push(
-        ...mappings.filter(({ trees: trees2 }) => trees2.worktrees.some((tree) => tree.directory === directory)).map(({ project: project2 }) => project2)
+        ...mappings.filter(({ trees }) => trees.worktrees.some((tree) => tree.directory === directory)).map(({ project }) => project)
       );
     }
-    if (owners.length !== 1)
+    return owners.length === 1 ? owners[0] : null;
+  }
+
+  // src/panel/worktree.ts
+  async function inspectWorktreeDestination(host2, directory, name) {
+    const project = await findProject(host2, directory);
+    if (!project)
       throw new Error(
         "Cannot identify the originating registered project. No worktree was requested."
       );
-    const project = owners[0];
     const [trees, sessions] = await Promise.all([
       ready(
         () => host2.listWorktrees(project.id),
@@ -7128,6 +8483,10 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
     let reconcileQueued = false;
     let pendingInspection = null;
     let changes = [];
+    let workflows = new Set(CORE_WORKFLOWS);
+    let listedIds = /* @__PURE__ */ new Set();
+    let checkFocus = true;
+    let focusedChange = null;
     let staleIds = /* @__PURE__ */ new Set();
     let unavailableIds = /* @__PURE__ */ new Set();
     let failures = [];
@@ -7139,6 +8498,13 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
     let settled = false;
     let errorMessage = null;
     let search = "";
+    let boardTab = "changes";
+    let archivedState = null;
+    let specsState = null;
+    let specState = null;
+    let selectedSpec = null;
+    let specListScroll = 0;
+    let returningToSpec = null;
     let selectedChange = null;
     let selectedArtifact = "";
     let activeView = "document";
@@ -7160,7 +8526,11 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       pendingInspection = null;
       scope = null;
       resources.setContext(null);
+      clearBrowse(true);
       changes = [];
+      workflows = new Set(CORE_WORKFLOWS);
+      listedIds = /* @__PURE__ */ new Set();
+      focusedChange = null;
       staleIds = /* @__PURE__ */ new Set();
       unavailableIds = /* @__PURE__ */ new Set();
       failures = [];
@@ -7174,6 +8544,7 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       detailOpening++;
       readGeneration++;
       search = "";
+      boardView.resetPositions();
       errorMessage = null;
       render();
     }
@@ -7184,7 +8555,11 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       errorMessage = "Planning target changed. Refresh to establish the new scope.";
       render();
     }
-    function loadBoard(refresh = false, reconcile = false) {
+    function loadBoard({
+      refresh = false,
+      reconcile = false,
+      workflows: readWorkflows = false
+    } = {}) {
       if (boardActive) {
         if (reconcile) reconcileQueued = true;
         return;
@@ -7195,7 +8570,10 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
         return;
       }
       if (refresh) {
-        resources.refresh();
+        if (readWorkflows) {
+          resources.refresh();
+          clearBrowse(false);
+        } else resources.refreshChanges();
         readGeneration++;
         detailOpening++;
         files = /* @__PURE__ */ new Map();
@@ -7209,18 +8587,26 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
       render();
       void (async () => {
         try {
-          const listing = await client.list(currentDirectory);
+          const [listing, configuredWorkflows] = await Promise.all([
+            client.list(currentDirectory),
+            readWorkflows ? loadWorkflows(client, currentDirectory) : workflows
+          ]);
           if (directory !== currentDirectory || epoch !== startingEpoch || operation !== boardOperation)
             return;
           if (scope && scope.root !== listing.root) {
             invalidate();
-            loadBoard();
+            loadBoard({ workflows: true });
             return;
           }
+          workflows = configuredWorkflows;
+          const previousScope = scope;
           scope = scope?.root === listing.root && scope.planning === listing.planning ? scope : { directory: currentDirectory, root: listing.root, planning: listing.planning };
           const current = scope;
           resources.setContext(current);
+          if (current !== previousScope) clearBrowse(true);
+          readBrowse();
           const listed = new Set(listing.changes.map((entry) => entry.id));
+          listedIds = listed;
           if (selectedChange && !listed.has(selectedChange.id)) {
             unavailableIds.add(selectedChange.id);
             detailOpening++;
@@ -7243,7 +8629,9 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
           pendingSummaries = listedCount;
           settled = true;
           render();
-          const summaries = await client.summaries(current, listing.changes);
+          const summaryRequest = client.summaries(current, listing.changes);
+          if (checkFocus) claimFocus();
+          const summaries = await summaryRequest;
           if (epoch !== startingEpoch || scope !== current || operation !== boardOperation) return;
           for (const entry of summaries) {
             try {
@@ -7288,7 +8676,7 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
               }
               if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
                 invalidate();
-                loadBoard();
+                loadBoard({ workflows: true });
                 return;
               }
               failures = [
@@ -7316,7 +8704,7 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
           }
           if (caught instanceof ServiceRequestError && caught.code === "ROOT_CHANGED") {
             invalidate();
-            loadBoard();
+            loadBoard({ workflows: true });
             return;
           }
           pendingSummaries = 0;
@@ -7329,38 +8717,65 @@ Report archived, skipped and blocked changes with reasons. If none qualify, make
             render();
             if (reconcileQueued) {
               reconcileQueued = false;
-              loadBoard(true);
+              loadBoard({ refresh: true });
             }
+            applyFocus();
           }
         }
       })();
     }
-    function actionPrompt(change, intent) {
-      const target = `OpenSpec change "${change.id}"`;
-      const goal = change.goal?.trim() ? `
-Goal: ${change.goal}` : "";
-      if (intent === "explore")
-        return `Use your skill tool to load and invoke the openspec-explore skill for ${target}.${goal}
-
-Investigate the goal, relevant code, options and trade-offs for ${target}. Discuss findings without file changes or implementation. If no goal is recorded, inspect existing context and ask the user to clarify it if necessary; do not invent a goal.`;
-      if (change.stage === "planning")
-        return `Use your skill tool to load and invoke the openspec-propose skill for ${target} (existing change).${goal}
-
-Inspect ${target}'s status and current metadata. Preserve existing decisions and any recorded goal; only if current metadata has no goal, establish and record a concise goal from existing change context. Ask the user for clarification if the goal is unclear. Finish planning this existing scaffold and complete missing planning artefacts using OpenSpec's artefact instructions. Do not create another change or implement code. If the skill requires new-change creation, explain the conflict rather than creating another change.`;
-      if (change.stage === "ready" || change.stage === "progress") {
-        const progress = change.stage === "progress" ? `
-${change.completedTasks} of ${change.totalTasks} tasks complete. Pick up where implementation left off and complete the remaining tasks.` : "";
-        return `Use your skill tool to load and invoke the openspec-apply-change skill for ${target}.${progress}
-
-Complete all remaining tasks in ${target}, then verify the implementation against its change artefacts. Resolve any issues found and verify again until all tasks are complete and verification passes. If blocked, report the blocker rather than marking unfinished work complete.`;
+    function clearBrowse(resetSelection) {
+      archivedState = specsState = specState = null;
+      returningToSpec = null;
+      if (resetSelection) {
+        selectedSpec = null;
+        specListScroll = 0;
       }
-      if (intent === "verify")
-        return `Use your skill tool to load and invoke the openspec-verify-change skill for ${target}.`;
-      return `Use your skill tool to load and invoke the openspec-archive-change skill for ${target}.`;
+    }
+    function readBrowse() {
+      if (!scope || selectedChange) return;
+      if (boardTab === "archived" && !archivedState) readArchived(scope);
+      else if (boardTab === "specs") {
+        if (selectedSpec) {
+          if (!specState) readSpec(scope, selectedSpec);
+        } else if (!specsState) readSpecs(scope);
+      }
+    }
+    function readArchived(captured) {
+      const read = resources.archived(captured);
+      archivedState = read.state;
+      if (read.completion)
+        void read.completion.then((state) => {
+          if (disposed || scope !== captured || archivedState !== read.state) return;
+          archivedState = state;
+          render();
+        });
+    }
+    function readSpecs(captured) {
+      const read = resources.specs(captured);
+      specsState = read.state;
+      if (read.completion)
+        void read.completion.then((state) => {
+          if (disposed || scope !== captured || specsState !== read.state) return;
+          specsState = state;
+          render();
+          restoreSpecList();
+        });
+    }
+    function readSpec(captured, id, retry = false) {
+      const read = resources.spec(captured, id, retry);
+      specState = read.state;
+      if (read.completion)
+        void read.completion.then((state) => {
+          if (disposed || scope !== captured || selectedSpec !== id || specState !== read.state)
+            return;
+          specState = state;
+          render();
+        });
     }
     async function preparePrompt(change, captured, originatingEpoch, intent, originatingSession = sessionId) {
       const current = changes.find((item) => item.id === change.id);
-      if (!captured || scope !== captured || epoch !== originatingEpoch || sessionId !== originatingSession || unavailableIds.has(change.id) || !current || intent === "verify" && current.stage !== "complete" || intent === "explore" && current.stage !== "planning" || (intent === "primary" || intent === "worktree") && current.stage !== change.stage)
+      if (!captured || scope !== captured || epoch !== originatingEpoch || sessionId !== originatingSession || unavailableIds.has(change.id) || !current || current.stage !== change.stage || intent === "verify" && (current.stage !== "complete" || !workflows.has("verify")) || intent === "explore" && current.stage !== "planning")
         return;
       if (intent === "worktree") {
         if (current.stage !== "ready" && current.stage !== "progress") return;
@@ -7368,15 +8783,28 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         return;
       }
       const expectedSession = sessionId;
+      const currentContext = () => scope === captured && epoch === originatingEpoch && sessionId === expectedSession;
       try {
-        await host2.compose({ text: actionPrompt(change, intent), mode: "replace" });
-        if (scope !== captured || epoch !== originatingEpoch || sessionId !== expectedSession) return;
+        const text2 = intent === "ff" || intent === "continue" ? planningPrompt(change, intent) : actionPrompt(change, intent === "verify" || intent === "explore" ? intent : "primary");
+        await host2.compose({ text: text2, mode: "replace" });
+        if (!currentContext()) return;
+        if (expectedSession !== null)
+          void appendTrackedChange(host2, expectedSession, change.id, currentContext, async () => {
+            const project = await findProject(host2, captured.directory);
+            if (!project || !currentContext()) return [];
+            return resolveSessionChanges(
+              expectedSession,
+              await host2.listSessions(project.id),
+              null,
+              listedIds
+            );
+          });
         await host2.toast({
           kind: "success",
           message: "Workflow prompt prepared in the open composer."
         });
       } catch (caught) {
-        if (scope !== captured || epoch !== originatingEpoch || sessionId !== expectedSession) return;
+        if (!currentContext()) return;
         await host2.toast({
           kind: "error",
           message: caught instanceof HostRequestError ? caught.message : "The workflow prompt could not be prepared."
@@ -7404,6 +8832,7 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         const result = await host2.startSession({
           providerId: "openspec-board",
           id: change.id,
+          data: { kind: "change", change: change.id },
           title: `Apply ${change.id}`,
           url: "https://openspec.dev/docs/quickstart",
           projectId: project.id,
@@ -7455,7 +8884,7 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       }
       if (state.error.code === "ROOT_CHANGED") {
         invalidate();
-        loadBoard();
+        loadBoard({ workflows: true });
         return true;
       }
       if (state.error.code === "CHANGE_UNAVAILABLE") {
@@ -7563,8 +8992,10 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
     function openDetail(change, captured, originatingEpoch) {
       if (!captured || scope !== captured || epoch !== originatingEpoch || unavailableIds.has(change.id) || !changes.some((item) => item.id === change.id))
         return;
+      selectedSpec = null;
+      boardTab = "changes";
       selectedChange = change;
-      boardScroll = window.scrollY;
+      boardScroll = boardView.scrollForChanges();
       selectedArtifact = "";
       render();
       const first = change.artifacts.find(
@@ -7574,17 +9005,51 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       startContent(change);
       queueMicrotask(() => appRoot.querySelector(".detail-back button")?.focus());
     }
+    function applyFocus() {
+      if (boardActive || !focusedChange) return;
+      const target = focusedChange;
+      focusedChange = null;
+      if (listedIds.has(target.name)) {
+        const change = changes.find(({ id }) => id === target.name);
+        if (change) openDetail(change, scope, epoch);
+      } else if (!target.reloaded) {
+        if (selectedChange) closeDetail();
+        focusedChange = { name: target.name, reloaded: true };
+        loadBoard({ refresh: true });
+      } else {
+        if (selectedChange) closeDetail();
+        void host2.toast({ kind: "info", message: `${target.name} isn't in this board's list.` }).catch(
+          (caught) => console.warn("Could not show the OpenSpec focus notice.", caught)
+        );
+      }
+    }
+    function claimFocus() {
+      const captured = scope;
+      const startingEpoch = epoch;
+      if (!captured) {
+        checkFocus = true;
+        return;
+      }
+      checkFocus = false;
+      void client.claimFocus(captured.directory).then((change) => {
+        if (!change || disposed || scope !== captured || epoch !== startingEpoch) return;
+        focusedChange = { name: change, reloaded: false };
+        applyFocus();
+      }).catch(
+        (caught) => console.warn("Could not claim the OpenSpec board focus.", caught)
+      );
+    }
     const createView = mountCreateDialog(client, {
       current: () => scope,
       created: (origin) => {
         if (scope?.directory === origin.directory && scope.root === origin.root && scope.planning === origin.planning)
-          loadBoard(true, true);
+          loadBoard({ refresh: true, reconcile: true });
       },
       inspect: (origin, name) => {
         if (scope?.directory !== origin.directory || scope.root !== origin.root || scope.planning !== origin.planning)
           return;
         pendingInspection = { scope, epoch, name, minOperation: boardOperation + 1 };
-        loadBoard(true, true);
+        loadBoard({ refresh: true, reconcile: true });
       }
     });
     async function openHelp() {
@@ -7612,10 +9077,11 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         const result = await host2.startSession({
           providerId: "openspec-board",
           id: "archive-all",
+          data: { kind: "archive-all" },
           title: "Archive completed OpenSpec changes",
           url: "https://openspec.dev/docs/quickstart",
           navigation: "preserve",
-          text: archiveAllPrompt
+          text: archiveAllPrompt(workflows)
         });
         if (!current()) return;
         if (result.sessionId && result.sent === "sent") {
@@ -7660,14 +9126,50 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       create: () => {
         if (scope) createView.open();
       },
-      retry: () => loadBoard(true),
+      retry: () => loadBoard({ refresh: true, workflows: true }),
       search: (value) => {
         search = value;
         render();
+      },
+      select: (view) => {
+        boardTab = view;
+        returningToSpec = null;
+        readBrowse();
+        render();
+      },
+      openSpec: (id) => {
+        if (!scope || boardTab !== "specs" || !specsState?.value?.some((item) => item.id === id))
+          return;
+        specListScroll = window.scrollY;
+        selectedSpec = id;
+        readSpec(scope, id);
+        render();
+        specView?.focusBack();
       }
     });
     const detailRoot = document.createElement("div");
     appRoot.append(detailRoot);
+    let specView = null;
+    const specCallbacks = {
+      close: () => {
+        returningToSpec = selectedSpec;
+        selectedSpec = null;
+        specState = null;
+        readBrowse();
+        render();
+        restoreSpecList();
+      },
+      refresh: () => loadBoard({ refresh: true, workflows: true }),
+      retry: () => {
+        if (!scope || !selectedSpec) return;
+        if (!specState && errorMessage) loadBoard({ refresh: true, workflows: true });
+        else {
+          readSpec(scope, selectedSpec, true);
+          render();
+        }
+      },
+      openUrl: openDocumentLink
+    };
     const deleteView = mountDeleteDialog(appRoot, client, {
       current: () => selectedChange && scope ? { scope, epoch, selection: selection2, name: selectedChange.id } : null,
       removed: (attempt) => {
@@ -7687,10 +9189,8 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         if (pendingInspection?.name === attempt.name) pendingInspection = null;
         resources.invalidateChange(attempt.scope, attempt.name);
         render();
-        loadBoard(true, true);
-        queueMicrotask(
-          () => appRoot.querySelector('input[aria-label="Search changes"]')?.focus()
-        );
+        loadBoard({ refresh: true, reconcile: true });
+        queueMicrotask(() => focusBoard());
       }
     });
     const detailView = mountDetailView(detailRoot, {
@@ -7711,34 +9211,13 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         })().catch(() => {
         });
       },
-      openUrl: (url) => {
-        void host2.openUrl(url).catch(async (caught) => {
-          await host2.toast({
-            kind: "error",
-            message: caught instanceof HostRequestError ? caught.message : "Cannot open document link"
-          });
-        }).catch(() => {
-        });
-      },
-      refresh: () => loadBoard(true),
+      openUrl: openDocumentLink,
+      refresh: () => loadBoard({ refresh: true, workflows: true }),
       delete: () => {
         if (scope && selectedChange && !unavailableIds.has(selectedChange.id))
           deleteView.open({ scope, epoch, selection: selection2, name: selectedChange.id });
       },
-      close: () => {
-        const name = selectedChange?.id;
-        selection2++;
-        detailOpening++;
-        selectedChange = null;
-        render();
-        requestAnimationFrame(() => window.scrollTo(0, boardScroll));
-        queueMicrotask(() => {
-          const opener = [...appRoot.querySelectorAll(".card-main")].find(
-            (button2) => button2.textContent === name
-          );
-          (opener ?? appRoot.querySelector('input[aria-label="Search changes"]'))?.focus();
-        });
-      },
+      close: closeDetail,
       selectArtifact,
       selectTasks: () => {
         selectedArtifact = taskArtifact(selectedChange) ?? "";
@@ -7754,6 +9233,39 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         if (selectedChange) void preparePrompt(selectedChange, scope, epoch, intent);
       }
     });
+    function openDocumentLink(url) {
+      void host2.openUrl(url).catch(async (caught) => {
+        await host2.toast({
+          kind: "error",
+          message: caught instanceof HostRequestError ? caught.message : "Cannot open document link"
+        });
+      }).catch(() => {
+      });
+    }
+    function restoreSpecList() {
+      const id = returningToSpec;
+      if (!id || specsState?.pending || boardTab !== "specs" || selectedSpec || selectedChange)
+        return;
+      returningToSpec = null;
+      boardView.focusSpec(id);
+      window.scrollTo(0, specListScroll);
+    }
+    function closeDetail() {
+      const name = selectedChange?.id;
+      selection2++;
+      detailOpening++;
+      selectedChange = null;
+      render();
+      requestAnimationFrame(() => window.scrollTo(0, boardScroll));
+      queueMicrotask(() => focusBoard(name));
+    }
+    function focusBoard(name) {
+      const opener = name ? [...appRoot.querySelectorAll(".card-main")].find(
+        (button2) => button2.textContent === name
+      ) : void 0;
+      const fallback = document.documentElement.dataset.pointer === "coarse" ? ".new-change-control button" : 'input[aria-label="Search changes"]';
+      (opener ?? appRoot.querySelector(fallback))?.focus();
+    }
     function render() {
       const originatingSession = sessionId;
       const detailChange = selectedChange;
@@ -7776,6 +9288,10 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         settled,
         error: errorMessage,
         failures,
+        workflows,
+        view: boardTab,
+        archived: archivedState,
+        specs: specsState,
         cards: changes.map((change) => ({
           change,
           stale: staleIds.has(change.id),
@@ -7789,10 +9305,18 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
           action: (intent) => void preparePrompt(change, captured, originatingEpoch, intent, originatingSession)
         }))
       });
-      boardView.setVisible(!selectedChange);
+      boardView.setVisible(!selectedChange && !selectedSpec);
+      if (selectedSpec) {
+        specView ??= mountSpecView(appRoot, specCallbacks);
+        specView.update(selectedSpec, specState, loading, errorMessage);
+      } else if (specView) {
+        specView.dispose();
+        specView = null;
+      }
       detailView.update(
         selectedChange ? {
           change: selectedChange,
+          workflows,
           selectedArtifact,
           activeView,
           files,
@@ -7814,20 +9338,23 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
         } : null
       );
     }
+    const offServiceEvent = host2.onServiceEvent(({ topic }) => {
+      if (topic === "focus" && document.visibilityState === "visible") claimFocus();
+    });
     const offReady = host2.onReady((ready2) => {
       const changed = directory !== ready2.directory;
       directory = ready2.directory;
       sessionId = ready2.session?.id ?? null;
       if (changed) {
         invalidate();
-        loadBoard();
+        loadBoard({ workflows: true });
       } else render();
     });
     const offDirectory = host2.onDirectory((nextDirectory) => {
       if (directory === nextDirectory) return;
       directory = nextDirectory;
       invalidate();
-      loadBoard();
+      loadBoard({ workflows: true });
     });
     const offSession = host2.onSession((nextSession) => {
       sessionId = nextSession?.id ?? null;
@@ -7841,8 +9368,10 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
       offReady();
       offDirectory();
       offSession();
+      offServiceEvent();
       resources.dispose();
       boardView.dispose();
+      specView?.dispose();
       detailView.dispose();
       deleteView.dispose();
       createView.dispose();
@@ -7851,12 +9380,21 @@ Complete all remaining tasks in ${target}, then verify the implementation agains
     };
   }
 
+  // src/panel/device.ts
+  function applyDevice(device) {
+    const { dataset, style } = document.documentElement;
+    dataset.pointer = device?.pointer ?? (matchMedia("(pointer: coarse)").matches ? "coarse" : "fine");
+    style.setProperty("--oc-inset-bottom", `${device?.insets.bottom ?? 0}px`);
+    style.setProperty("--oc-keyboard", `${device?.keyboard ?? 0}px`);
+  }
+
   // src/panel.ts
   var root = document.querySelector("#root");
   if (!root) throw new Error("Panel root is missing");
   var host = connectHost();
   var offTheme = host.onReady((ready2) => {
     applyHostReady(ready2, document.documentElement);
+    applyDevice(ready2.device);
     document.documentElement.classList.add("oc-themed");
     root.style.visibility = "visible";
   });
