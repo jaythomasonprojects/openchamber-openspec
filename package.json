@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preversion": "npm run check",
+    "version": "npm run build && git add panel/main.js service/main.js",
     "build": "npm run build:panel && npm run build:service",
     "build:panel": "esbuild src/panel.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/main.js",
     "build:service": "esbuild src/service.ts --bundle --format=cjs --platform=node --target=node22 --outfile=service/main.js",

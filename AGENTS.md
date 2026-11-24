@@ -19,6 +19,26 @@
   or tracked paths. `openspec/` is untracked; worktrees reach shared planning through this symlink.
   Installs affect every linked worktree; keep separate dependencies when branches differ.
 
+## Releasing
+
+- Start from a clean, committed release branch with locked dependencies and the CLI version tested
+  in `README.md`. `package.json` owns the version; npm updates the lockfile. Releases start with the
+  next version, without backfilling earlier tags or Releases.
+- Ask before creating a tag, pushing, or creating a GitHub Release. After approval, run
+  `npm version patch` (or `minor` / `major`). For v2 alphas, start from the v2 branch with
+  `npm version prerelease --preid=alpha`. Keep the lifecycle hooks enabled and avoid `--force`. They
+  check the project and stage rebuilt bundles into npm's version commit.
+- Inspect `git show --stat HEAD` and `git status --short`. npm's default commit message is the
+  version number, with an annotated `vX.Y.Z` tag. Confirm the tag points to that commit.
+- Label merged PRs using the categories in `.github/release.yml`. Write a short `highlights.md`
+  outside the checkout: what is new, what comes next, and a link to the roadmap issue.
+- After push approval, push the release commit and its specific tag with
+  `git push --atomic origin HEAD vX.Y.Z`. After Release approval, run
+  `gh release create vX.Y.Z --verify-tag --generate-notes --notes-file /path/to/highlights.md`. The
+  highlights precede the generated PR list. Add `--prerelease` for alpha or beta builds; for the
+  first Release, add `--notes-start-tag v1.2.0` to bound the generated history. Review the published
+  notes.
+
 ## Runtime boundaries
 
 - `src/panel.ts` applies the SDK theme before showing the panel. `src/panel/client.ts` uses the SDK
