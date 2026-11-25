@@ -68,7 +68,7 @@
       Compare the final diff with the passing candidate and verify the execution configuration is
       unchanged and permanent triggers target only `dev`/`main` pushes and pull requests. If
       execution logic changed, restore the temporary trigger and repeat task 4.2 before proceeding.
-- [ ] 5.2 Obtain approval for the merge and `dev` push, then merge the tested change into `dev` with
+- [x] 5.2 Obtain approval for the merge and `dev` push, then merge the tested change into `dev` with
       the final running rules. Respect the existing `dev` worktree and preserve unrelated changes.
       Inspect the resulting `dev` Actions run with GitHub CLI and record both successful native
       outcomes before marking rollout complete. Verify no Linux CI job, Docker changes, unrelated V2

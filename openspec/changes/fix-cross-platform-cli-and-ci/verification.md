@@ -1,5 +1,27 @@
 # Verification
 
+## Final assessment
+
+| Dimension    | Result                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------ |
+| Completeness | 11/11 tasks complete; all 7 added requirements mapped                                            |
+| Correctness  | All 15 scenarios covered by native tests, workflow invariant checks or recorded rollout evidence |
+| Coherence    | All 5 design decisions followed; existing test seams retained                                    |
+
+No critical findings, warnings or suggestions remain for the agreed scope. The fixes found during
+native verification were corrected and tested again. Windows desktop environment inheritance was not
+certified; it is outside the native-runner acceptance criteria and is reported under Live host. No
+release or archive was performed.
+
+## Dev rollout
+
+Fast-forwarded the clean `dev` checkout and pushed the final workflow with permanent triggers.
+[Run 45712974596](https://github.com/jaythomasonprojects/openchamber-openspec/actions/runs/45712974596),
+head `e685ed20033b0f5f9c279db401ea97f3f437f9ba`, passed Windows and macOS. Each platform passed all
+175 npm-suite tests with zero skips and its standalone launcher smoke test. Execution files match
+the successful testing-branch candidate exactly. This satisfies task 5.2. Subsequent
+completion-record edits are documentation only.
+
 ## Scope and permission
 
 The implementation request is to complete all remaining tasks, including scoped testing-branch
@@ -27,7 +49,10 @@ those tasks; `main`, tags and releases are excluded.
 The final workflow removes only `fix/1-cross-platform-tests` from the push filter. A parsed-YAML
 comparison against passing candidate `b7e39023ade06446283c3125f23f5e90e9baa111` confirmed every
 execution setting is identical, with final push and pull-request targets exactly `[dev, main]`. The
-main `dev` checkout was clean before integration.
+main `dev` checkout was clean before integration. Pushing the final filter to the testing branch did
+not create another run; its latest run remains the passing candidate. The following `dev` push did
+schedule both native jobs. All 18 changed paths are inside the agreed scope, and remote `main`
+remains at `7ccd631077d4c17d58817e2d1bd11f9875b2233f`.
 
 ## Passing native candidate
 
@@ -70,16 +95,16 @@ head `ac163f7a18cf164fbcb5361349b18a66cbee9e21`:
 - Native platform, installer and reproducibility requirements map to `.github/workflows/verify.yml`:
   two native runners, locked project dependencies, pinned npm and standalone versions, verified
   asset checksums, and fail-fast disabled.
-- Permanent event filters and testing-branch retirement need the final trigger-only edit and
-  resulting `dev` run. The GitHub run history above supplies the failure/iteration evidence.
+- Permanent event filters and testing-branch retirement passed the final trigger-only comparison and
+  resulting `dev` run. The GitHub run history supplies the failure/iteration evidence. Pull-request
+  scheduling was checked from the event configuration; no pull request was created.
 - Design coherence: one existing asynchronous fixture adapter, no new helper/test module, native
   symlinks, canonical temporary paths, unchanged SDK/permissions and no Docker or Linux CI job.
 - Local `npm test` passed all 175 tests with zero skips after the native path corrections. Lint,
   format check, typecheck, strict OpenSpec validation, generated-bundle consistency and
   `git diff --check` also passed.
 
-The remaining native installer, integration and rollout evidence is required before the final
-verification verdict; this mapping alone is not a claim of task completion.
+The native installer, integration and rollout evidence above completes the verification mapping.
 
 ## Live host
 
