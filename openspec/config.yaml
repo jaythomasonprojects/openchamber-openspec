@@ -20,9 +20,9 @@ context: |
   Test seams: extend the existing test file for the layer. Panel and host
   behaviour goes through the fake SDK host, extended for each new SDK call; the
   real CLI is for new CLI output only. Ask before adding a test file or helper.
-  While planning, agree a change's test seams with the user, using the tdd skill.
-  Plan tests only at agreed seams.
-  Before settling an approach, check it with the simple skill.
+  While planning, agree on the change's test seams with the user. Plan tests only
+  at agreed seams.
+  Before settling on an approach, check whether a simpler design meets the requirements.
   Write planning artifacts with the writing-for-agents skill.
   Before planning host interaction, read the SDK docs in
   node_modules/@openchamber/sdk/.
@@ -44,7 +44,8 @@ operations:
   apply:
     guidance:
       - |
-        Follow the tdd loop for the tests the tasks name. Pause and ask before
+        For each test the tasks name, confirm it fails for the expected reason
+        before implementing the fix, then confirm it passes. Pause and ask before
         testing at any other seam.
       - |
         Run each task's verification before marking it complete. Finish the

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,9 +8,10 @@ import { promisify } from "node:util";
 import { runFixtureCommand } from "./helpers/openspec.mjs";
 
 const exec = promisify(execFile);
+const tempDirectory = await realpath(tmpdir());
 
 test("panel and integration setup release their servers when Chromium is missing", async () => {
-  const browserPath = await mkdtemp(join(tmpdir(), "openspec-missing-browser-"));
+  const browserPath = await mkdtemp(join(tempDirectory, "openspec-missing-browser-"));
   const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
   try {
     for (const [file, name] of [
@@ -37,7 +38,7 @@ test("panel and integration setup release their servers when Chromium is missing
 });
 
 test("stalled fixture CLI is force-killed and its disposable root can be removed", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-stalled-fixture-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-stalled-fixture-"));
   const pidFile = join(root, "pid");
   let pid;
   try {

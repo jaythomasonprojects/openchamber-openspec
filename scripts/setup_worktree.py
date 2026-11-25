@@ -2,10 +2,10 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Link shared local paths from the main checkout. Run with uv run --no-project.
+"""Link node_modules from the main checkout. Run with uv run --no-project.
 
 Installs affect all linked worktrees; use separate node_modules directories when
-branch dependencies differ. Tracked OpenSpec files remain local to each worktree.
+branch dependencies differ. Git supplies the tracked OpenSpec files in each worktree.
 """
 
 import subprocess
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 # Repository-relative paths shared with the main checkout.
-SHARED_PATHS: list[Path] = [Path("node_modules"), Path("openspec")]
+SHARED_PATHS: list[Path] = [Path("node_modules")]
 
 
 def git(root: Path, *args: str) -> str:

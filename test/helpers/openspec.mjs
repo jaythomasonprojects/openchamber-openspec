@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -13,8 +13,9 @@ export function runFixtureCommand(command, args, { cwd, env, timeoutMs = 30_000 
 export async function withProjects(run) {
   const directories = [];
   try {
+    const tempDirectory = await realpath(tmpdir());
     for (const label of ["first", "second"])
-      directories.push(await mkdtemp(join(tmpdir(), `openspec-${label}-`)));
+      directories.push(await mkdtemp(join(tempDirectory, `openspec-${label}-`)));
     const setup = await Promise.allSettled(
       directories.map((directory) =>
         runFixtureCommand("openspec", ["init", "--tools", "none", directory]),

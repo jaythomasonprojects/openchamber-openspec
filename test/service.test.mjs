@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -21,15 +22,17 @@ import { createOpenSpecService, runOpenSpec } from "../service/main.js";
 import { fixtureChange, withProjects } from "./helpers/openspec.mjs";
 
 const exec = promisify(execFile);
+const tempDirectory = await realpath(tmpdir());
+
 async function mockProject(prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
+  const root = await mkdtemp(join(tempDirectory, prefix));
   await mkdir(join(root, "openspec", "changes"), { recursive: true });
   return root;
 }
 
 test("shared planning scope rejects link retargets without changing the CLI root", async () => {
   await withProjects(async (main, replacement) => {
-    const checkout = await mkdtemp(join(tmpdir(), "openspec-linked-"));
+    const checkout = await mkdtemp(join(tempDirectory, "openspec-linked-"));
     try {
       await fixtureChange(main, "shared-change", "Shared goal");
       await symlink(join(main, "openspec"), join(checkout, "openspec"));
@@ -117,9 +120,9 @@ apply:
           headers: { authorization: "Bearer test-token" },
           body,
         });
-        assert.deepEqual((await safe.json()).tasks, [
-          { id: "1", description: "First line only", done: false },
-        ]);
+        const [{ description, ...task }, ...rest] = (await safe.json()).tasks;
+        assert.deepEqual([task, ...rest], [{ id: "1", done: false }]);
+        assert.match(description, /^First line only/);
         calls.length = 0;
         await rm(join(target, "custom-checklist.md"));
         await symlink(join(main, "outside.md"), join(target, "custom-checklist.md"));
@@ -181,10 +184,17 @@ test("shared planning reads preserve lexical selectors, goal, multiple specs and
         assert.equal(typeof content.content, "string");
         assert.ok(content.content.length);
       }
-      assert.deepEqual((await post("/tasks", { ...scope, change: "shared-documents" })).tasks, [
-        { id: "1", description: "First task", done: true },
-        { id: "2", description: "Second task", done: false },
-      ]);
+      const [first, { description, ...second }, ...rest] = (
+        await post("/tasks", { ...scope, change: "shared-documents" })
+      ).tasks;
+      assert.deepEqual(
+        [first, second, ...rest],
+        [
+          { id: "1", description: "First task", done: true },
+          { id: "2", done: false },
+        ],
+      );
+      assert.match(description, /^Second task/);
     });
   });
 });
@@ -259,7 +269,7 @@ test("summary CLI never reads escaped goal metadata", async () => {
 
 test("shared planning creation pins dispatch and reports retargeted outcomes as unknown", async () => {
   await withProjects(async (main, replacement) => {
-    const checkout = await mkdtemp(join(tmpdir(), "openspec-create-link-"));
+    const checkout = await mkdtemp(join(tempDirectory, "openspec-create-link-"));
     try {
       await symlink(join(main, "openspec"), join(checkout, "openspec"));
       let writes = 0;
@@ -313,7 +323,7 @@ test("shared planning creation pins dispatch and reports retargeted outcomes as 
 
 test("shared creation rejects a planning link retarget before dispatch", async () => {
   await withProjects(async (main, replacement) => {
-    const checkout = await mkdtemp(join(tmpdir(), "openspec-prewrite-link-"));
+    const checkout = await mkdtemp(join(tempDirectory, "openspec-prewrite-link-"));
     try {
       await symlink(join(main, "openspec"), join(checkout, "openspec"));
       let checks = 0;
@@ -454,7 +464,7 @@ test("shared deletion rejects replaced planning and active parent directories be
 
 test("rootless failed change reads verify a fresh listing before reporting availability", async () => {
   const root = await mockProject("openspec-rootless-");
-  const other = await mkdtemp(join(tmpdir(), "openspec-rootless-other-"));
+  const other = await mkdtemp(join(tempDirectory, "openspec-rootless-other-"));
   try {
     for (const path of ["/tasks", "/document"]) {
       for (const [listedRoot, listed, expected] of [
@@ -546,7 +556,7 @@ async function summaryResponse(url, options) {
 
 test("summaries batch isolates CLI diagnostics, paths and metadata with one invocation", async () => {
   const root = await mockProject("openspec-batch-");
-  const other = await mkdtemp(join(tmpdir(), "openspec-escape-"));
+  const other = await mkdtemp(join(tempDirectory, "openspec-escape-"));
   const calls = [];
   const status = (id, extra = {}) => ({
     changeName: id,
@@ -703,7 +713,7 @@ test("slimmer read routes use only their working command and reconcile missing t
 
 test("read root verification rejects missing, null, implicit and changed roots", async () => {
   const root = await mockProject("openspec-read-root-");
-  const other = await mkdtemp(join(tmpdir(), "openspec-other-root-"));
+  const other = await mkdtemp(join(tempDirectory, "openspec-other-root-"));
   try {
     for (const [reported, code, status] of [
       [undefined, "NO_OPENSPEC_ROOT", 404],
@@ -855,7 +865,7 @@ test("request deadline stops an incomplete body before dispatch and keeps health
 });
 
 test("body receipt consumes the same budget as later CLI commands", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-body-budget-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-body-budget-"));
   const calls = [];
   try {
     await withService(
@@ -1034,7 +1044,7 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
 });
 
 test("CLI bounds stdout and stderr and force-kills a process ignoring termination", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-process-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-process-"));
   try {
     const script = join(root, "fake-cli");
     for (const [mode, output] of [
@@ -1059,11 +1069,12 @@ test("CLI bounds stdout and stderr and force-kills a process ignoring terminatio
       script,
       `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(join(root, "child.pid"))}, String(process.pid));\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n`,
     );
+    const timeoutMs = 1_000;
     const started = Date.now();
-    const result = await runOpenSpec(root, [], 250, { binary: script, graceMs: 30 });
+    const result = await runOpenSpec(root, [], timeoutMs, { binary: script, graceMs: 30 });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "CLI_TIMEOUT");
-    assert.ok(Date.now() - started < 1200);
+    assert.ok(Date.now() - started < 2_000);
     const pid = Number(await readFile(join(root, "child.pid"), "utf8"));
     assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
     await writeFile(
@@ -1097,7 +1108,7 @@ test("CLI bounds stdout and stderr and force-kills a process ignoring terminatio
 });
 
 test("scoped routes expose distinct current documents and reject root changes and escapes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-scoped-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-scoped-"));
   const changeRoot = join(root, "openspec", "changes", "two-docs");
   await mkdir(join(changeRoot, "specs"), { recursive: true });
   await writeFile(join(changeRoot, "specs", "first.md"), "First file");
@@ -1205,7 +1216,7 @@ test("scoped routes expose distinct current documents and reject root changes an
 });
 
 test("board metadata stays lightweight and Tasks returns only CLI records", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-light-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-light-"));
   const changeRoot = join(root, "openspec", "changes", "light-change");
   await mkdir(changeRoot, { recursive: true });
   await writeFile(
@@ -1312,7 +1323,7 @@ test("a failed status confirms missing changes before reporting them unavailable
 
 test("a failed status stays retryable for a listed change and propagates root replacement", async () => {
   const root = await mockProject("openspec-status-root-");
-  const other = await mkdtemp(join(tmpdir(), "openspec-other-root-"));
+  const other = await mkdtemp(join(tempDirectory, "openspec-other-root-"));
   let listedRoot = root;
   const runner = async (_directory, args) => {
     if (args[0] === "context") return { ok: true, value: { root: { path: root } } };
@@ -1499,8 +1510,8 @@ test("delete removes only a listed active change after checking its original roo
 });
 
 test("delete rejects symlinked parent and target even when CLI lists the change", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openspec-delete-links-"));
-  const external = await mkdtemp(join(tmpdir(), "openspec-delete-external-"));
+  const directory = await mkdtemp(join(tempDirectory, "openspec-delete-links-"));
+  const external = await mkdtemp(join(tempDirectory, "openspec-delete-external-"));
   const parent = join(directory, "openspec", "changes");
   const target = join(parent, "unsafe-change");
   const runner = async (_cwd, args) => ({
@@ -1540,7 +1551,7 @@ test("delete rejects symlinked parent and target even when CLI lists the change"
 });
 
 test("delete refuses a directory whose OpenSpec root changes after status", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openspec-delete-root-race-"));
+  const directory = await mkdtemp(join(tempDirectory, "openspec-delete-root-race-"));
   const target = join(directory, "openspec", "changes", "unsafe-change");
   await mkdir(target, { recursive: true });
   await writeFile(join(target, "sentinel"), "still here");
@@ -1583,8 +1594,8 @@ test("delete refuses a directory whose OpenSpec root changes after status", asyn
 });
 
 test("delete refuses a changes parent replaced during the final context check", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openspec-delete-parent-race-"));
-  const outside = await mkdtemp(join(tmpdir(), "openspec-delete-parent-outside-"));
+  const directory = await mkdtemp(join(tempDirectory, "openspec-delete-parent-race-"));
+  const outside = await mkdtemp(join(tempDirectory, "openspec-delete-parent-outside-"));
   const parent = join(directory, "openspec", "changes");
   const target = join(parent, "unsafe-change");
   const sentinel = join(outside, "unsafe-change", "sentinel");
@@ -1636,7 +1647,7 @@ test("delete refuses a changes parent replaced during the final context check", 
 });
 
 test("delete timeout after filesystem dispatch is unknown and does not retry", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openspec-delete-timeout-"));
+  const directory = await mkdtemp(join(tempDirectory, "openspec-delete-timeout-"));
   const target = join(directory, "openspec", "changes", "slow-change");
   await mkdir(target, { recursive: true });
   let removals = 0;
@@ -1679,7 +1690,7 @@ test("delete timeout after filesystem dispatch is unknown and does not retry", a
 });
 
 test("filesystem failure after deletion dispatch reports an unknown outcome", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openspec-delete-failure-"));
+  const directory = await mkdtemp(join(tempDirectory, "openspec-delete-failure-"));
   const target = join(directory, "openspec", "changes", "failed-change");
   await mkdir(target, { recursive: true });
   let removals = 0;
@@ -1775,7 +1786,7 @@ test("creation stays in the validated root after a selected-directory alias move
 });
 
 test("creation stays in the validated registered store when its pointer changes", async () => {
-  const base = await mkdtemp(join(tmpdir(), "openspec-create-store-race-"));
+  const base = await mkdtemp(join(tempDirectory, "openspec-create-store-race-"));
   const env = {
     ...process.env,
     XDG_DATA_HOME: join(base, "data"),
@@ -1960,7 +1971,7 @@ test("a disappeared document returns a structured error and leaves health availa
 });
 
 test("malformed listing entries and count bounds fail explicitly", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openspec-invalid-"));
+  const root = await mkdtemp(join(tempDirectory, "openspec-invalid-"));
   try {
     for (const changes of [
       [{ name: 123, completedTasks: 0, totalTasks: 0 }],

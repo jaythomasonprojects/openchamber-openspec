@@ -16,7 +16,7 @@ features are welcome.
 ## Get started
 
 1. Install the [OpenSpec CLI](https://openspec.dev/docs/installation) on the OpenChamber server
-   (tested with 1.13.1).
+   (tested with 1.13.1 and 2.1.0).
 2. Run `openspec config profile`. Keep the core workflows, add **verify**, and choose skills
    delivery.
 3. In your project, run `openspec init --tools opencode`.
