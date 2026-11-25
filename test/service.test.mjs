@@ -1043,6 +1043,61 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
   }
 });
 
+test("CLI launches installed OpenSpec with intact arguments in a project path with spaces", async () => {
+  const root = await mockProject("openspec installed & ");
+  try {
+    await writeFile(join(root, "openspec", "config.yaml"), "schema: spec-driven\n");
+    const version = await runOpenSpec(root, ["version"]);
+    assert.equal(version.ok, true, JSON.stringify(version));
+    assert.match(version.value.version, /^\d+\.\d+\.\d+/);
+    if (process.env.OPENSPEC_TEST_INSTALL === "npm") {
+      assert.equal(version.value.install.packageManager, "npm");
+      assert.equal(version.value.install.scope, "global");
+    } else if (process.env.OPENSPEC_TEST_INSTALL === "standalone") {
+      assert.equal(version.value.install.scope, "standalone");
+    }
+    const goal = 'Support "Windows" & macOS with 日本語';
+    const created = await runOpenSpec(root, ["new", "change", "native-launch", "--goal", goal]);
+    assert.equal(created.ok, true, JSON.stringify(created));
+    assert.equal(created.value.change.id, "native-launch");
+    const metadata = await readFile(
+      join(root, "openspec", "changes", "native-launch", ".openspec.yaml"),
+      "utf8",
+    );
+    assert.equal(metadata.includes(goal), true, metadata);
+    const context = await runOpenSpec(root, ["context"]);
+    assert.equal(context.ok, true, JSON.stringify(context));
+    assert.equal(context.value.root.path, root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI preserves argument boundaries and distinguishes launch and operation failures", async () => {
+  const root = await mkdtemp(join(tempDirectory, "openspec arguments & "));
+  const script = join(root, "fake-cli");
+  try {
+    await writeFile(
+      script,
+      `#!/usr/bin/env node
+if (process.argv.includes("fail")) { process.stderr.write("Operation refused"); process.exit(2); }
+process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));
+`,
+    );
+    await chmod(script, 0o700);
+    const args = ["new", "change", "native-launch", "--goal", 'Support "quotes" & 日本語'];
+    const result = await runOpenSpec(root, args, 2000, { binary: script });
+    assert.deepEqual(result, { ok: true, value: { args: [...args, "--json"], cwd: root } });
+    const failed = await runOpenSpec(root, ["fail"], 2000, { binary: script });
+    assert.equal(failed.error.code, "OPENSPEC_ERROR");
+    assert.equal(failed.error.message, "Operation refused");
+    const missing = await runOpenSpec(root, [], 2000, { binary: join(root, "absent") });
+    assert.equal(missing.error.code, "CLI_UNAVAILABLE");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("CLI bounds stdout and stderr and force-kills a process ignoring termination", async () => {
   const root = await mkdtemp(join(tempDirectory, "openspec-process-"));
   try {

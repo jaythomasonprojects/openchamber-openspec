@@ -1,0 +1,36 @@
+name: Verify
+
+on:
+  push:
+    branches: [dev, main, fix/1-cross-platform-tests]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    env:
+      OPENSPEC_TELEMETRY: "0"
+      OPENSPEC_TEST_INSTALL: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm install --global @fission-ai/openspec@2.1.0
+      - run: npx playwright install chromium
+      - run: npm run build:service
+      - name: Installed npm launcher
+        run: node --test --test-name-pattern="CLI launches installed OpenSpec" test/service.test.mjs
+      - run: npm test
