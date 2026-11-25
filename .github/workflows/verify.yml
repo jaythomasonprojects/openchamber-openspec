@@ -34,3 +34,39 @@ jobs:
       - name: Installed npm launcher
         run: node --test --test-name-pattern="CLI launches installed OpenSpec" test/service.test.mjs
       - run: npm test
+      - name: Install pinned standalone OpenSpec
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $platform = if ($IsWindows) { "windows" } else { "darwin" }
+          $architecture = $env:RUNNER_ARCH.ToLowerInvariant()
+          $extension = if ($IsWindows) { "zip" } else { "tar.gz" }
+          $asset = "openspec-$platform-$architecture.$extension"
+          $download = Join-Path $env:RUNNER_TEMP "openspec-release"
+          $install = Join-Path $env:RUNNER_TEMP "openspec-standalone"
+          New-Item -ItemType Directory -Force $download, $install | Out-Null
+          gh release download v2.1.0 --repo Fission-AI/OpenSpec --pattern $asset --pattern SHA256SUMS --dir $download
+          if ($LASTEXITCODE -ne 0) { throw "OpenSpec release download failed" }
+          $archive = Join-Path $download $asset
+          $checksum = @(Get-Content (Join-Path $download "SHA256SUMS") | Where-Object {
+            ($_ -split '\s+')[-1].TrimStart('*') -eq $asset
+          })
+          if ($checksum.Count -ne 1) { throw "Expected one checksum for $asset" }
+          $expected = ($checksum[0] -split '\s+')[0]
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) {
+            throw "OpenSpec checksum mismatch"
+          }
+          tar -xf $archive -C $install
+          if ($LASTEXITCODE -ne 0) { throw "OpenSpec archive extraction failed" }
+          $install | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Installed standalone launcher
+        shell: pwsh
+        env:
+          OPENSPEC_TEST_INSTALL: standalone
+        run: |
+          $binary = if ($IsWindows) { "openspec.exe" } else { "openspec" }
+          $expected = Join-Path $env:RUNNER_TEMP "openspec-standalone" $binary
+          $resolved = (Get-Command openspec -CommandType Application).Source
+          if ($resolved -ne $expected) { throw "Wrong OpenSpec selected: $resolved" }
+          node --test --test-name-pattern="CLI launches installed OpenSpec" test/service.test.mjs

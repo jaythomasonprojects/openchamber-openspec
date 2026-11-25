@@ -45,7 +45,10 @@ then `npm run check`. OpenChamber does not build extensions on install, so rebui
 re-enable the extension to restart its service. More detail is in `AGENTS.md`.
 
 GitHub Actions runs the suite natively on Windows and macOS with Node 24 and OpenSpec 2.1.0. Linux
-verification remains local. Docker is not required for the suite.
+verification remains local. Docker is not required for the suite. Each job runs the full suite
+against the npm installation, then checks the standalone executable with the focused installed-CLI
+test. The selected command and installation type are checked so one installation cannot hide a
+broken launch of the other.
 
 Validate workflow changes on a separate testing branch: temporarily add that exact branch to the
 push filter in `.github/workflows/verify.yml`, push, and inspect results with `gh run list`,

@@ -1629,7 +1629,7 @@ test("delete refuses a directory whose OpenSpec root changes after status", asyn
         ok: true,
         value:
           args[0] === "context"
-            ? { root: { path: ++contexts === 1 ? directory : "/tmp/opencode" } }
+            ? { root: { path: ++contexts === 1 ? directory : tempDirectory } }
             : args[0] === "list"
               ? { changes: [{ name: "unsafe-change", completedTasks: 0, totalTasks: 0 }] }
               : {

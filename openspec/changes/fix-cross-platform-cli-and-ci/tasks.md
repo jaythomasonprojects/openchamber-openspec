@@ -8,7 +8,7 @@
       and pull-request targets, read-only contents permission and `fail-fast: false`. Verify the
       workflow definition and document the temporary validation process beside the existing
       developer guidance without adding a preparation script.
-- [ ] 1.2 Obtain scoped approval for testing-branch pushes and repeated Actions runs. Push the
+- [x] 1.2 Obtain scoped approval for testing-branch pushes and repeated Actions runs. Push the
       initial workflow and use `gh run list`, `gh run watch` and `gh run view --log-failed` to
       record baseline results by head SHA and platform. Completion requires actual native
       diagnostics, including the Windows command-shim failure; unavailable approval or access leaves

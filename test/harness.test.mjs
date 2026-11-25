@@ -10,6 +10,51 @@ import { runFixtureCommand } from "./helpers/openspec.mjs";
 const exec = promisify(execFile);
 const tempDirectory = await realpath(tmpdir());
 
+test("fixture commands capture output, arguments, environment and failed exits", async () => {
+  const root = await mkdtemp(join(tempDirectory, "openspec fixture & "));
+  const args = ['"quoted" & 日本語', "second argument"];
+  try {
+    const output = await runFixtureCommand(
+      process.execPath,
+      [
+        "-e",
+        'process.stdout.write(JSON.stringify({ args: process.argv.slice(1), cwd: process.cwd(), marker: process.env.FIXTURE_MARKER })); process.stderr.write("notice");',
+        ...args,
+      ],
+      { cwd: root, env: { ...process.env, FIXTURE_MARKER: "isolated" } },
+    );
+    assert.deepEqual(JSON.parse(output.stdout), { args, cwd: root, marker: "isolated" });
+    assert.equal(output.stderr, "notice");
+    await assert.rejects(
+      runFixtureCommand(process.execPath, [
+        "-e",
+        'process.stdout.write("partial"); process.stderr.write("refused"); process.exit(7);',
+      ]),
+      (error) => error.code === 7 && error.stdout === "partial" && error.stderr === "refused",
+    );
+    await assert.rejects(runFixtureCommand(join(root, "absent"), []), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fixture commands bound stdout and stderr", async () => {
+  for (const stream of ["stdout", "stderr"]) {
+    await assert.rejects(
+      runFixtureCommand(process.execPath, [
+        "-e",
+        `process.${stream}.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);`,
+      ]),
+      { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" },
+    );
+  }
+});
+
+test("fixture commands launch the installed OpenSpec command", async () => {
+  const { stdout } = await runFixtureCommand("openspec", ["version", "--json"]);
+  assert.match(JSON.parse(stdout).version, /^\d+\.\d+\.\d+/);
+});
+
 test("panel and integration setup release their servers when Chromium is missing", async () => {
   const browserPath = await mkdtemp(join(tempDirectory, "openspec-missing-browser-"));
   const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;

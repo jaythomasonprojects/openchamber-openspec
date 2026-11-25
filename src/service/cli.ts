@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const STDOUT_BYTES = 1024 * 1024;
@@ -64,6 +64,7 @@ export async function runOpenSpec(
     const child = spawn(options.binary ?? "openspec", [...args, "--json"], {
       cwd: directory,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -96,13 +97,13 @@ export async function runOpenSpec(
       () => terminate(serviceError("CLI_TIMEOUT", "OpenSpec request timed out.", 504)),
       Math.min(COMMAND_TIMEOUT_MS, remainingMs),
     );
-    child.stdout.on("data", (value: Buffer) => {
+    child.stdout!.on("data", (value: Buffer) => {
       stdoutSize += value.length;
       if (stdoutSize > (options.stdoutBytes ?? STDOUT_BYTES))
         terminate(serviceError("CLI_OUTPUT_TOO_LARGE", "OpenSpec output is too large.", 413));
       else stdout.push(value);
     });
-    child.stderr.on("data", (value: Buffer) => {
+    child.stderr!.on("data", (value: Buffer) => {
       stderrSize += value.length;
       if (stderrSize > (options.stderrBytes ?? STDERR_BYTES))
         terminate(serviceError("CLI_OUTPUT_TOO_LARGE", "OpenSpec output is too large.", 413));
