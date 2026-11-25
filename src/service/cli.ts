@@ -63,6 +63,7 @@ export async function runOpenSpec(
   return await new Promise((complete) => {
     const child = spawn(options.binary ?? "openspec", [...args, "--json"], {
       cwd: directory,
+      env: { ...process.env, OPENSPEC_TELEMETRY: "0" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

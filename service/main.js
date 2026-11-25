@@ -7949,6 +7949,7 @@ async function runOpenSpec(directory, args, remainingMs = COMMAND_TIMEOUT_MS, op
   return await new Promise((complete) => {
     const child = (0, import_cross_spawn.default)(options.binary ?? "openspec", [...args, "--json"], {
       cwd: directory,
+      env: { ...process.env, OPENSPEC_TELEMETRY: "0" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });

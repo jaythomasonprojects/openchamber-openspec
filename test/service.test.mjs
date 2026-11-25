@@ -1094,6 +1094,24 @@ process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.
   }
 });
 
+test("service CLI children opt out of telemetry without changing the parent setting", async () => {
+  const previous = process.env.OPENSPEC_TELEMETRY;
+  try {
+    process.env.OPENSPEC_TELEMETRY = "1";
+    const result = await runOpenSpec(
+      tempDirectory,
+      ["-e", "console.log(JSON.stringify({ telemetry: process.env.OPENSPEC_TELEMETRY }))", "--"],
+      undefined,
+      { binary: process.execPath },
+    );
+    assert.deepEqual(result, { ok: true, value: { telemetry: "0" } });
+    assert.equal(process.env.OPENSPEC_TELEMETRY, "1");
+  } finally {
+    if (previous === undefined) delete process.env.OPENSPEC_TELEMETRY;
+    else process.env.OPENSPEC_TELEMETRY = previous;
+  }
+});
+
 test("CLI bounds stdout and stderr and force-kills a process ignoring termination", async () => {
   const root = await mkdtemp(join(tempDirectory, "openspec-process-"));
   try {

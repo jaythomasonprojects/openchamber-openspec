@@ -26,8 +26,8 @@ features are welcome.
    and bulk archiving. If you trust that, choose **Allow and enable**.
 5. Open the **OpenSpec** rail panel, or find it under **Extension pages**.
 
-The board's help button opens the OpenSpec quickstart. For ~ x2 faster loads, run
-`openspec config set telemetry.enabled false`, since telemetry can slow down every CLI call.
+The board's help button opens the OpenSpec quickstart. The extension disables telemetry for its
+OpenSpec CLI calls so they don't wait for a telemetry request. Your CLI settings are unchanged.
 
 ## Planning across worktrees
 
