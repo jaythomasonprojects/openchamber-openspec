@@ -39,6 +39,9 @@ rules:
     - |
       Plan tests as vertical slices. Each task that adds a test names its seam
       and the behaviour it pins, and implements that behaviour.
+    - |
+      Release plans include npm run check and verification in Chromium, Firefox
+      and WebKit. Report browser evidence and any unavailable coverage explicitly.
 
 operations:
   apply:
@@ -48,7 +51,8 @@ operations:
         before implementing the fix, then confirm it passes. Pause and ask before
         testing at any other seam.
       - |
-        Run each task's verification before marking it complete. Finish the
-        change with npm run check in all three browsers, plus the live-host
-        check in AGENTS.md when it changes what the user sees or how the panel
-        uses the host. Report commands, results and anything not verified.
+        Run each task's agreed, focused verification before marking it complete.
+        Use affected checks during development; reserve npm run check for releases
+        or explicitly requested full validation. Perform the live-host check in
+        AGENTS.md when a change affects visible behaviour or host interaction.
+        Report commands, results and anything not verified.
