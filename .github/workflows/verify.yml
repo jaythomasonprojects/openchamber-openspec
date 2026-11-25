@@ -67,6 +67,6 @@ jobs:
         run: |
           $binary = if ($IsWindows) { "openspec.exe" } else { "openspec" }
           $expected = Join-Path $env:RUNNER_TEMP "openspec-standalone" $binary
-          $resolved = (Get-Command openspec -CommandType Application).Source
+          $resolved = (Get-Command openspec -CommandType Application | Select-Object -First 1).Source
           if ($resolved -ne $expected) { throw "Wrong OpenSpec selected: $resolved" }
           node --test --test-name-pattern="CLI launches installed OpenSpec" test/service.test.mjs

@@ -26,6 +26,8 @@ for (const shared of [false, true])
         "# Integration proposal content\n\nA **real** planning document.\n\n```mermaid\nflowchart LR\n Read --> Plan --> Apply\n```\n",
       );
       const changeDir = join(directory, "openspec", "changes", change);
+      const firstSpec = join("specs", "first", "spec.md");
+      const secondSpec = join("specs", "second", "spec.md");
       const metadataPath = join(changeDir, ".openspec.yaml");
       const metadata = await readFile(metadataPath, "utf8");
       const setAreas = (areas) =>
@@ -198,30 +200,22 @@ for (const shared of [false, true])
               (item) => item.path === "/document" && item.body.artifactId === "specs",
             ).length === 2,
         );
-        await panelFrame
-          .locator(".detail-content details summary")
-          .getByText("specs/first/spec.md")
-          .click();
+        await panelFrame.locator(".detail-content details summary").getByText(firstSpec).click();
         await panelFrame.getByRole("heading", { name: "first integration document" }).waitFor();
         assert.deepEqual(
           await page.evaluate(() => window.__requests.map((item) => item.path)),
           initial,
         );
-        await panelFrame
-          .locator(".detail-content details summary")
-          .getByText("specs/second/spec.md")
-          .click();
+        await panelFrame.locator(".detail-content details summary").getByText(secondSpec).click();
         await panelFrame.getByRole("heading", { name: "second integration document" }).waitFor();
-        await panelFrame
-          .locator(".detail-content details summary")
-          .getByText("specs/first/spec.md")
-          .click();
+        await panelFrame.locator(".detail-content details summary").getByText(firstSpec).click();
         await panelFrame.getByRole("heading", { name: "first integration document" }).waitFor();
         const warmReads = await page.evaluate(
-          () =>
+          (selector) =>
             window.__requests.filter(
-              (item) => item.path === "/document" && item.body.selector === "specs/first/spec.md",
+              (item) => item.path === "/document" && item.body.selector === selector,
             ).length,
+          firstSpec,
         );
         assert.ok(warmReads <= 1);
         await writeFile(
@@ -275,10 +269,7 @@ for (const shared of [false, true])
         );
         assert.equal(await panelFrame.locator(".task-row.done").count(), 1);
         await panelFrame.getByRole("tab", { name: /Specs · Written/ }).click();
-        await panelFrame
-          .locator(".detail-content details summary")
-          .getByText("specs/first/spec.md")
-          .click();
+        await panelFrame.locator(".detail-content details summary").getByText(firstSpec).click();
         await panelFrame
           .getByRole("heading", { name: "Edited integration document" })
           .waitFor({ timeout: 30000 });

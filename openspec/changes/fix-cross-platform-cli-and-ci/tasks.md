@@ -38,7 +38,7 @@
       native Windows runner privileges rather than skips or copied directories. Retain canonical
       temporary paths and Unix fake-script executable permissions. Verify the previously failing
       native cases pass and still reject unsafe roots and escaped targets.
-- [ ] 3.2 At the existing service/harness process seams, adapt OS-specific signal assertions while
+- [x] 3.2 At the existing service/harness process seams, adapt OS-specific signal assertions while
       retaining timeout/output errors, PID disappearance, removable roots and missing-browser server
       teardown. Verify focused service and harness checks after their prerequisite builds on both
       native jobs. If evidence requires new process-tree machinery, pause for approval rather than
@@ -57,7 +57,7 @@
       both platforms. Record run URLs, head SHAs, job conclusions and any transient reruns in this
       change's verification notes. Recheck focused local tests between attempts; do not treat older
       green results or silently skipped coverage as acceptance.
-- [ ] 4.3 Follow the existing local live-host activation procedure for the rebuilt extension and
+- [x] 4.3 Follow the existing local live-host activation procedure for the rebuilt extension and
       verify board loading and opening an existing change without creating real sessions/worktrees.
       Record the host, operating system and result, including unavailable Windows desktop evidence.
       This is broader integration evidence, not a replacement for native Actions.

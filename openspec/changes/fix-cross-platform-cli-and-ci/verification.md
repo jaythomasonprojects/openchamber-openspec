@@ -22,6 +22,32 @@ those tasks; `main`, tags and releases are excluded.
   instead of the intended root-changed 409. Both failures were inspected with
   `gh run view --log-failed`.
 
+## Native fixture verification
+
+[Run 45711148655](https://github.com/jaythomasonprojects/openchamber-openspec/actions/runs/45711148655),
+head `ac163f7a18cf164fbcb5361349b18a66cbee9e21`:
+
+- macOS passed all 175 npm-suite tests with no skips.
+- Windows passed 173/175 with no skips. Only the two integration journeys failed: their document
+  selectors assumed Unix separators. They use native path joins in the correction.
+- Both platforms passed CLI bounds/PID cleanup, fixture timeout/removal and missing-browser
+  teardown. Explicit SIGKILL already reports consistently in these tests, so no weakened assertions
+  or new OS branches were needed.
+- Standalone asset download, architecture selection and checksum passed on macOS. The path guard
+  caught PowerShell returning multiple application matches, including the correct first executable.
+  The correction checks the first match rather than comparing the entire result array with a single
+  path.
+
+## Live host
+
+Updated the existing ZIP-installed extension on the Linux host at `http://127.0.0.1:57123`,
+re-approved the unchanged permissions, disabled and enabled it, and confirmed `enabled: true` with
+revision 16. The installed service bundle hash matches the checkout
+(`309f4988a6692661978e7edccf4302dfcf87a75fc15a9d58cfc6cfd0334e5b58`). Python Playwright opened this
+existing session's board and the change's Proposal document. No session or worktree was created.
+Screenshot: `/tmp/opencode/openspec-live-detail.png`. Windows desktop verification is unavailable;
+native Actions evidence is recorded separately.
+
 ## Affected Linux checks
 
 After the adapter consolidation and filesystem fixture changes, `npm run build` followed by
