@@ -53,7 +53,7 @@ Begin this group only after the merged baseline in task 1.3 passes. Make all cha
       the follow-up, link roadmap #5 and leave the Windows issue clearly separate. Check that no
       notes claim an unverified runtime decoder fix or untested platform support. Prepare approved
       highlights outside the checkout and label PR #3 as `bug` for generated notes.
-- [ ] 4.2 Obtain tag approval, confirm clean `dev` is still at package version 1.2.1, and run
+- [x] 4.2 Obtain tag approval, confirm clean `dev` is still at package version 1.2.1, and run
       `npm version patch` there with hooks enabled. Verify the hooks pass, the package and lockfile
       report 1.2.2, both bundles are included as needed, and annotated tag `v1.2.2` points to the
       version commit on `dev`. The native `preversion` check is an additional safety run, not a
@@ -61,17 +61,17 @@ Begin this group only after the merged baseline in task 1.3 passes. Make all cha
 
 ## 5. Merge the ready release into main and publish
 
-- [ ] 5.1 Confirm all release checks passed on `dev`, then obtain approval to merge into `main` and
+- [x] 5.1 Confirm all release checks passed on `dev`, then obtain approval to merge into `main` and
       push. Confirm the release descends from current remote `main` and fast-forward `main` to the
       tested `dev` release commit. If `main` advanced, integrate it into `dev` and repeat the checks
       before promotion; ask about any effect on the prepared tag rather than move it silently.
       Atomically push `dev`, `main` and the specific `v1.2.2` tag. Verify both remote branches and
       the tag identify the release commit. Use no force-push.
-- [ ] 5.2 Obtain GitHub Release approval and use the release command in `AGENTS.md` with
+- [x] 5.2 Obtain GitHub Release approval and use the release command in `AGENTS.md` with
       `--verify-tag`, generated notes, the approved highlights and `--notes-start-tag v1.2.0` if
       this is still the first Release. Verify the published title, tag, contributor credit, PR list
       and roadmap link. Publish no npm package and backfill no older Releases.
-- [ ] 5.3 Add a factual release update to PR #3 and issue #2 with the release link and tested CLI
+- [x] 5.3 Add a factual release update to PR #3 and issue #2 with the release link and tested CLI
       versions. Verify PR #3's original commit is on remote `main` and check GitHub marks the PR
       merged; report any status mismatch rather than perform an early direct merge into `main`.
       Verify the posted text asks for confirmation of any remaining board failure rather than
@@ -79,11 +79,11 @@ Begin this group only after the merged baseline in task 1.3 passes. Make all cha
 
 ## 6. Deploy and verify the installed extension
 
-- [ ] 6.1 Confirm the intended OpenChamber host, extension source and current installed version,
+- [x] 6.1 Confirm the intended OpenChamber host, extension source and current installed version,
       then obtain update approval. Update the Git-installed extension to published 1.2.2, or use the
       agreed release checkout for a folder installation. Disable and enable it to restart the
       service. Verify Settings > Extensions shows version 1.2.2 and Enabled.
-- [ ] 6.2 Follow `AGENTS.md` for the live iframe check. Confirm the board loads, detail opens, task
+- [x] 6.2 Follow `AGENTS.md` for the live iframe check. Confirm the board loads, detail opens, task
       text matches CLI output and explicit Refresh updates an edited task in a disposable project.
       Create no real session or worktree without approval. Record the installed version, source,
       observed results and anything not verified before declaring deployment complete.
@@ -114,3 +114,19 @@ Begin this group only after the merged baseline in task 1.3 passes. Make all cha
   passed 49/49 with isolated OpenSpec 1.13.1. The global CLI remains 2.1.0.
   `openspec validate --specs` passed all eight specs with existing long-requirement warnings; strict
   validation of this change passed. No runtime, SDK or bundle changes were needed.
+- Release commit: `a227204`, annotated `v1.2.2` tag, package and lockfile version 1.2.2. The npm
+  version hooks passed another 170/170 tests. `dev`, `main` and the tag were published atomically at
+  that commit. GitHub marked PR #3 merged and published
+  <https://github.com/jaythomasonprojects/openchamber-openspec/releases/tag/v1.2.2>. Release updates
+  were posted to PR #3 and issue #2; issues #1, #2 and #5 remain open.
+- Deployment: the installed extension is a folder install from this checkout on
+  `http://127.0.0.1:57123`, not a Git install. Settings > Extensions shows 1.2.2 and Enabled after
+  disabling and enabling it. The browser-panel input tool was unavailable while the desktop was not
+  being drawn, so the same Settings UI was operated through headless Playwright.
+- Live iframe verification passed with
+  `uv run --with playwright python /tmp/opencode/release122-live-check.py`, using the installed
+  Chromium executable. The real installed extension loaded a disposable project, opened detail,
+  displayed the exact CLI task text and updated its text and completion state after an edit and
+  explicit Refresh. No page errors occurred. The disposable project was closed through the
+  confirmation dialog and its files removed; no session or worktree was created. Screenshots:
+  `/tmp/opencode/release122-installed.png` and `/tmp/opencode/release122-live-task.png`.
