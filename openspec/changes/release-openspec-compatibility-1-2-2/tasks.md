@@ -42,14 +42,14 @@ Begin this group only after the merged baseline in task 1.3 passes. Make all cha
       the tested contents requires another check before promotion. Resolve the config's
       three-browser gate with the user before publication: the existing suite uses Chromium only,
       and this change does not authorise a new browser harness.
-- [ ] 3.3 Commit the verified maintainer follow-up and planning files on `dev`, separately from
+- [x] 3.3 Commit the verified maintainer follow-up and planning files on `dev`, separately from
       Daniel's contribution. Verify `dev` is clean, includes both generated bundles and excludes PR
       #4, `v2` source changes, the Windows CLI fix and an automatic `openspec/` symlink. Confirm
       `main` is still unchanged.
 
 ## 4. Prepare version 1.2.2
 
-- [ ] 4.1 Present rough release highlights in chat for approval. Credit Daniel, summarise PR #3 and
+- [x] 4.1 Present rough release highlights in chat for approval. Credit Daniel, summarise PR #3 and
       the follow-up, link roadmap #5 and leave the Windows issue clearly separate. Check that no
       notes claim an unverified runtime decoder fix or untested platform support. Prepare approved
       highlights outside the checkout and label PR #3 as `bug` for generated notes.
