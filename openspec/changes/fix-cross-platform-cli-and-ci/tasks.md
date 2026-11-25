@@ -33,7 +33,7 @@
 
 ## 3. Preserve filesystem and cleanup coverage natively
 
-- [ ] 3.1 At the existing service/integration filesystem seams, make file and directory symlink
+- [x] 3.1 At the existing service/integration filesystem seams, make file and directory symlink
       types explicit for shared roots, aliases, escapes and dangling/cyclic directory cases. Use
       native Windows runner privileges rather than skips or copied directories. Retain canonical
       temporary paths and Unix fake-script executable permissions. Verify the previously failing
@@ -46,13 +46,13 @@
 
 ## 4. Complete installation coverage and the native acceptance loop
 
-- [ ] 4.1 Add ordinary workflow steps that select and checksum the pinned standalone release for
+- [x] 4.1 Add ordinary workflow steps that select and checksum the pinned standalone release for
       each runner architecture, place it first on PATH and run the focused installed-CLI regression
       from `test/service.test.mjs`. Verify the resolved command and reported install type prove that
       npm cannot mask standalone failure; require success on Windows and macOS. Keep the full suite
       on npm and avoid another installer/browser matrix. Document the tested CLI and the two
       verification paths in existing developer guidance.
-- [ ] 4.2 Push scoped corrections to the testing branch and inspect each failing run with GitHub
+- [x] 4.2 Push scoped corrections to the testing branch and inspect each failing run with GitHub
       CLI. Repeat until the candidate revision passes the full npm suite and standalone smoke on
       both platforms. Record run URLs, head SHAs, job conclusions and any transient reruns in this
       change's verification notes. Recheck focused local tests between attempts; do not treat older
@@ -64,7 +64,7 @@
 
 ## 5. Restore final triggers and integrate into dev
 
-- [ ] 5.1 Once both platform jobs pass, remove only the temporary testing-branch push trigger.
+- [x] 5.1 Once both platform jobs pass, remove only the temporary testing-branch push trigger.
       Compare the final diff with the passing candidate and verify the execution configuration is
       unchanged and permanent triggers target only `dev`/`main` pushes and pull requests. If
       execution logic changed, restore the temporary trigger and repeat task 4.2 before proceeding.

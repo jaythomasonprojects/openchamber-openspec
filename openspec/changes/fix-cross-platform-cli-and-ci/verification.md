@@ -22,6 +22,26 @@ those tasks; `main`, tags and releases are excluded.
   instead of the intended root-changed 409. Both failures were inspected with
   `gh run view --log-failed`.
 
+## Final trigger comparison
+
+The final workflow removes only `fix/1-cross-platform-tests` from the push filter. A parsed-YAML
+comparison against passing candidate `b7e39023ade06446283c3125f23f5e90e9baa111` confirmed every
+execution setting is identical, with final push and pull-request targets exactly `[dev, main]`. The
+main `dev` checkout was clean before integration.
+
+## Passing native candidate
+
+[Run 45712069075](https://github.com/jaythomasonprojects/openchamber-openspec/actions/runs/45712069075),
+head `b7e39023ade06446283c3125f23f5e90e9baa111`, passed both native jobs. Windows and macOS each
+passed all 175 npm-suite tests with zero skips and the standalone installed-CLI smoke test. Release
+asset checksums, selected command paths and reported standalone install types all passed. This
+covers the shared/local integration journeys and all original containment/cleanup cases. There were
+four candidate runs in total and no transient reruns; each correction was committed and tested as a
+new revision.
+
+The same standalone regression also passed on Linux after downloading and checksum-verifying the
+pinned Linux release into a temporary directory, without changing the global npm installation.
+
 ## Native fixture verification
 
 [Run 45711148655](https://github.com/jaythomasonprojects/openchamber-openspec/actions/runs/45711148655),
@@ -37,6 +57,29 @@ head `ac163f7a18cf164fbcb5361349b18a66cbee9e21`:
   caught PowerShell returning multiple application matches, including the correct first executable.
   The correction checks the first match rather than comparing the entire result array with a single
   path.
+
+## Artifact verification mapping
+
+- CLI command resolution: `src/service/cli.ts:64` uses the explicit runtime dependency;
+  `test/service.test.mjs:1042` exercises the installed command and its reported installation type.
+- Argument and working-directory preservation: the installed-CLI test creates a goal containing
+  quotes, Unicode and an ampersand in a path containing spaces; the fake CLI test at
+  `test/service.test.mjs:1072` also asserts the complete argv array and cwd.
+- Bounded execution and failure distinctions: the existing service bounds/PID test at
+  `test/service.test.mjs:1097` and the missing-command/nonzero-exit cases remain active.
+- Native platform, installer and reproducibility requirements map to `.github/workflows/verify.yml`:
+  two native runners, locked project dependencies, pinned npm and standalone versions, verified
+  asset checksums, and fail-fast disabled.
+- Permanent event filters and testing-branch retirement need the final trigger-only edit and
+  resulting `dev` run. The GitHub run history above supplies the failure/iteration evidence.
+- Design coherence: one existing asynchronous fixture adapter, no new helper/test module, native
+  symlinks, canonical temporary paths, unchanged SDK/permissions and no Docker or Linux CI job.
+- Local `npm test` passed all 175 tests with zero skips after the native path corrections. Lint,
+  format check, typecheck, strict OpenSpec validation, generated-bundle consistency and
+  `git diff --check` also passed.
+
+The remaining native installer, integration and rollout evidence is required before the final
+verification verdict; this mapping alone is not a claim of task completion.
 
 ## Live host
 
