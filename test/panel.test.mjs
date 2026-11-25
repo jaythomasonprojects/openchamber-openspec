@@ -4496,6 +4496,7 @@ test("theme precedes first paint and detail fills narrow and expanded widths", a
       "rgb(29, 34, 38)",
     );
     await page.evaluate(() => __theme("light"));
+    await frame.locator('html[data-oc-theme="light"]').waitFor();
     assert.equal(
       await frame.locator("html").evaluate((node) => getComputedStyle(node).backgroundColor),
       "rgb(255, 255, 255)",

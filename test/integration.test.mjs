@@ -17,7 +17,7 @@ for (const shared of [false, true])
     await withProjects(async (directory, main) => {
       if (shared) {
         await rm(join(directory, "openspec"), { recursive: true });
-        await symlink(join(main, "openspec"), join(directory, "openspec"));
+        await symlink(join(main, "openspec"), join(directory, "openspec"), "dir");
       }
       const change = "integration-change";
       await fixtureChange(

@@ -16,14 +16,14 @@
 
 ## 2. Fix the launcher and consolidate fixture execution
 
-- [ ] 2.1 At the existing `test/service.test.mjs` launcher seam, add installed-CLI and argument/cwd
+- [x] 2.1 At the existing `test/service.test.mjs` launcher seam, add installed-CLI and argument/cwd
       regressions using the existing shebang fake CLI and a disposable project independent of the
       fixture command launcher. Confirm the expected Windows failure before the production change,
       then declare `cross-spawn` and development typings, replace the service launcher and add
       `windowsHide`. Rebuild with `npm run build:service`; run the focused service tests locally and
       on the testing branch to prove npm launch, intact special-character arguments and unchanged
       failure/output/deadline behaviour.
-- [ ] 2.2 At the existing helper/harness seam, adapt `runFixtureCommand` to asynchronous
+- [x] 2.2 At the existing helper/harness seam, adapt `runFixtureCommand` to asynchronous
       `cross-spawn` with bounded collection, captured stdout/stderr, failure diagnostics and timeout
       termination. Extend `test/harness.test.mjs` only as needed to pin captured output, failed
       exits and timeout/removal; show each regression failing for its intended reason before the
