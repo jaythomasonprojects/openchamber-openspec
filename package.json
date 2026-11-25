@@ -1,9 +1,11 @@
 {
   "name": "openchamber-openspec",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "scripts": {
+    "preversion": "npm run check",
+    "version": "npm run build && git add panel/main.js panel/status.js service/main.js",
     "build": "npm run build:panel && npm run build:status && npm run build:service",
     "build:panel": "esbuild src/panel.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/main.js",
     "build:status": "esbuild src/status.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=panel/status.js",

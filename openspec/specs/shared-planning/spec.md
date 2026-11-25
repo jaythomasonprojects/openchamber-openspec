@@ -38,8 +38,10 @@ and named change against the resolved planning boundary. CLI-returned paths SHAL
 consistent lexical and canonical resolution. A change target SHALL be a real named child of the
 authorised active changes directory, not a linked escape or another active or archived change.
 Documents and goal metadata SHALL remain inside that selected change. Task input paths SHALL be
-validated before the CLI reads them. Bounded reads, CLI-authoritative task counts and first-line
-descriptions, and scaffold-only creation SHALL apply through shared planning as they do locally.
+validated before the CLI reads them. Bounded reads, CLI-authoritative task counts and descriptions,
+and scaffold-only creation SHALL apply through shared planning as they do locally. Task descriptions
+SHALL retain continuation text when supplied by the CLI and SHALL NOT acquire continuation text that
+the CLI omits.
 
 #### Scenario: Browse shared change content
 
@@ -62,6 +64,25 @@ descriptions, and scaffold-only creation SHALL apply through shared planning as 
   or archive, or a document, metadata file, or task input escapes its selected change
 - **THEN** the affected operation reports an error without reading the escaped content or mutating
   its target
+
+#### Scenario: Display a task from a CLI that omits continuation text
+
+- **WHEN** the CLI returns only the first line of a task description for local or shared planning
+- **THEN** the Tasks view displays that returned description
+- **AND** the extension does not append continuation text from the source document
+
+#### Scenario: Display a task from a CLI that includes continuation text
+
+- **WHEN** the CLI returns a task description that includes continuation text for local or shared
+  planning
+- **THEN** the Tasks view displays the full returned description once
+- **AND** the extension does not truncate the description to the first source line
+
+#### Scenario: Refresh task text after a source edit
+
+- **WHEN** the task source changes and the user explicitly refreshes the view
+- **THEN** the task text and completion state match the fresh CLI task record
+- **AND** continuation text is included or omitted according to that record
 
 ### Requirement: Detect planning-target replacement
 

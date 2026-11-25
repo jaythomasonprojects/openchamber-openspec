@@ -47,9 +47,13 @@ for (const shared of [false, true])
       const implementation = join(directory, "implementation.ts");
       await writeFile(implementation, "export const kept = true;\n");
       const cliCalls = [];
-      const service = createOpenSpecService("integration-token", (cwd, args, remaining) => {
+      let cliTasks = [];
+      const service = createOpenSpecService("integration-token", async (cwd, args, remaining) => {
         cliCalls.push(args[0]);
-        return runOpenSpec(cwd, args, remaining);
+        const result = await runOpenSpec(cwd, args, remaining);
+        if (result.ok && args[0] === "instructions" && args[1] === "apply")
+          cliTasks = result.value.tasks;
+        return result;
       });
       let host;
       let browser;
@@ -179,6 +183,11 @@ for (const shared of [false, true])
           .locator(".task-row")
           .filter({ hasText: "1.1 Review integrated view" })
           .waitFor();
+        assert.equal(cliTasks.length, 1);
+        assert.deepEqual(
+          await panelFrame.locator(".task-row .task-title").allTextContents(),
+          cliTasks.map((task) => task.description),
+        );
         assert.equal(await panelFrame.locator(".task-row details").count(), 0);
         assert.equal(
           await panelFrame
@@ -259,7 +268,15 @@ for (const shared of [false, true])
           ["panel", "service"],
         );
         await panelFrame.getByRole("tab", { name: /Tasks · Written/ }).click();
-        await panelFrame.getByText(/1.1 Review integrated view/).waitFor();
+        await panelFrame
+          .locator(".task-row.done")
+          .filter({ hasText: "1.1 Review integrated view" })
+          .waitFor();
+        assert.equal(cliTasks.length, 1);
+        assert.deepEqual(
+          await panelFrame.locator(".task-row .task-title").allTextContents(),
+          cliTasks.map((task) => task.description),
+        );
         assert.equal(await panelFrame.locator(".task-row.done").count(), 1);
         await panelFrame.getByRole("tab", { name: /Specs · Written/ }).click();
         await panelFrame
