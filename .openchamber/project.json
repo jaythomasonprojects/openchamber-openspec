@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "setupWorktree": ["uv run --no-project scripts/setup_worktree.py"],
+  "setupWorktreeWait": true
+}

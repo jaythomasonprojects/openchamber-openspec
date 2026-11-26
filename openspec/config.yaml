@@ -4,60 +4,44 @@ context: |
   Consumers: people who install this public extension from GitHub. A new
   manifest capability makes every user re-approve permissions; a changed CLI
   call or prompt skill name can break users on other OpenSpec versions. Only
-  this repository's bundles use the private panel–service protocol, so change
-  it freely.
-  Handle a consumer breakage or add a risk mitigation only where the proposal
-  records that the user chose it.
-  Scope: one person's OpenChamber on desktop or web in Chromium, Firefox and
-  WebKit, and in OpenChamber's phone clients (2.7.1+).
-  The test harness launches Chromium only. Firefox and WebKit stay unverified
-  until a cross-browser harness exists; report them as not verified.
-  CLI compatibility is best effort.
+  this repository's two bundles use the private panel–service protocol, so
+  change it freely.
+  Surface potential breakages for these consumers, and any risk mitigation that
+  adds code or tests, and let the user choose which to handle. Add handling only
+  for what the user chooses.
+  Scope: one person's OpenChamber, desktop or web, in Chromium, Firefox and
+  WebKit.
+  CLI compatibility is best effort: when a change relies on an OpenSpec CLI
+  command, flag or output field that older CLI versions lack, the proposal
+  names it and offers documenting the requirement or one small fallback.
   Fail fast: unexpected CLI or service output is an error on the affected change
   or request, never defaulted or partly rendered. Decode only the fields the
   panel uses; artefact validity is openspec validate's job.
   Test seams: extend the existing test file for the layer. Panel and host
   behaviour goes through the fake SDK host, extended for each new SDK call; the
   real CLI is for new CLI output only. Ask before adding a test file or helper.
+  While planning, agree on the change's test seams with the user. Plan tests only
+  at agreed seams.
+  Before settling on an approach, check whether a simpler design meets the requirements.
   Write planning artifacts with the writing-for-agents skill.
   Before planning host interaction, read the SDK docs in
   node_modules/@openchamber/sdk/.
-  The OpenChamber host and SDK, the OpenSpec CLI and the skills it generates are
-  upstream.
+  The OpenChamber host and SDK, the OpenSpec CLI and the generated skills in
+  .opencode/ are upstream; when a change works around one, design.md names the
+  upstream cause.
 
 rules:
-  proposal:
-    - |
-      Surface potential breakages for consumers, and any risk mitigation that
-      adds code or tests, and let the user choose which to handle. Record each
-      choice.
-    - |
-      When the change relies on an OpenSpec CLI command, flag or output field
-      that older CLI versions lack, name it and offer documenting the
-      requirement or one small fallback.
   specs:
     - |
       Pin values the user chose, such as sizes, opacity and labels. Name private
       routes and fields only in design.md.
-  design:
-    - |
-      Before settling on an approach, check whether a simpler design meets the
-      requirements.
-    - |
-      Agree on the change's test seams with the user, then record them under a
-      "Test seams" heading, including any new test file or helper the user
-      approved.
-    - |
-      When the change works around an upstream, name the upstream cause.
   tasks:
     - |
-      Plan tests as vertical slices, only at the seams design.md records. Each
-      task that adds a test names its seam and the behaviour it pins, says to
-      add the failing test first, and implements that behaviour.
+      Plan tests as vertical slices. Each task that adds a test names its seam
+      and the behaviour it pins, and implements that behaviour.
     - |
-      End with a tracked task that runs npm run check, plus the live-host check
-      in AGENTS.md when the change alters what the user sees or how the panel
-      uses the host.
+      Release plans include npm run check and verification in Chromium, Firefox
+      and WebKit. Report browser evidence and any unavailable coverage explicitly.
 
 operations:
   apply:
@@ -67,5 +51,8 @@ operations:
         before implementing the fix, then confirm it passes. Pause and ask before
         testing at any other seam.
       - |
-        Run each task's verification before marking it complete. Report
-        commands, results and anything not verified.
+        Run each task's agreed, focused verification before marking it complete.
+        Use affected checks during development; reserve npm run check for releases
+        or explicitly requested full validation. Perform the live-host check in
+        AGENTS.md when a change affects visible behaviour or host interaction.
+        Report commands, results and anything not verified.

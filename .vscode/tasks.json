@@ -32,6 +32,54 @@
       "problemMatcher": []
     },
     {
+      "label": "Test: contracts",
+      "type": "shell",
+      "command": "node --test test/contracts.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: document",
+      "type": "shell",
+      "command": "node --test test/document.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: harness",
+      "type": "shell",
+      "command": "npm run build && node --test test/harness.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: integration",
+      "type": "shell",
+      "command": "npm run build && node --test test/integration.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: model",
+      "type": "shell",
+      "command": "npm run build:model:test && node --test test/model.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: panel",
+      "type": "shell",
+      "command": "npm run build:panel && node --test test/panel.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: resources",
+      "type": "shell",
+      "command": "npm run build:resources:test && node --test test/resources.test.mjs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: service",
+      "type": "shell",
+      "command": "npm run build:service && node --test test/service.test.mjs",
+      "problemMatcher": []
+    },
+    {
       "label": "Clean: caches",
       "type": "shell",
       "command": "npm run clean",

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import {
   chmod,
@@ -16,12 +15,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { promisify } from "node:util";
 import { parseManifestJson } from "@openchamber/sdk/schemas";
 import { createOpenSpecService, runOpenSpec } from "../service/main.js";
-import { fixtureChange, withProjects } from "./helpers/openspec.mjs";
-
-const exec = promisify(execFile);
+import { fixtureChange, runFixtureCommand, withProjects } from "./helpers/openspec.mjs";
 const tempDirectory = await realpath(tmpdir());
 
 async function mockProject(prefix) {
@@ -35,7 +31,7 @@ test("shared planning scope rejects link retargets without changing the CLI root
     const checkout = await mkdtemp(join(tempDirectory, "openspec-linked-"));
     try {
       await fixtureChange(main, "shared-change", "Shared goal");
-      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
       await withService(async (url) => {
         const post = async (path, body = {}) => {
           const response = await fetch(`${url}${path}`, {
@@ -58,7 +54,7 @@ test("shared planning scope rejects link retargets without changing the CLI root
           "Shared goal",
         );
         await rm(join(checkout, "openspec"));
-        await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+        await symlink(join(replacement, "openspec"), join(checkout, "openspec"), "dir");
         for (const path of ["/summaries", "/tasks", "/document", "/create", "/delete"])
           assert.equal(
             (
@@ -85,7 +81,7 @@ test("shared planning task containment rejects escaped custom inputs before inst
     const change = "shared-tasks";
     await fixtureChange(main, change, "Bounded tasks");
     await rm(join(checkout, "openspec"), { recursive: true });
-    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
     const target = join(main, "openspec", "changes", change);
     const schema = join(main, "openspec", "schemas", "custom-input");
     await mkdir(join(schema, "templates"), { recursive: true });
@@ -125,7 +121,7 @@ apply:
         assert.match(description, /^First line only/);
         calls.length = 0;
         await rm(join(target, "custom-checklist.md"));
-        await symlink(join(main, "outside.md"), join(target, "custom-checklist.md"));
+        await symlink(join(main, "outside.md"), join(target, "custom-checklist.md"), "file");
         const response = await fetch(`${url}/tasks`, {
           method: "POST",
           headers: { authorization: "Bearer test-token" },
@@ -145,7 +141,7 @@ apply:
 test("shared planning reads preserve lexical selectors, goal, multiple specs and CLI task authority", async () => {
   await withProjects(async (main, checkout) => {
     await rm(join(checkout, "openspec"), { recursive: true });
-    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
     await fixtureChange(main, "shared-documents", "Shared goal");
     const target = join(main, "openspec", "changes", "shared-documents");
     for (const [file, text] of [
@@ -203,13 +199,13 @@ test("invalid planning links fail without dispatching mutations", async () => {
   const root = await mockProject("openspec-invalid-link-");
   try {
     await rm(join(root, "openspec"), { recursive: true });
-    for (const target of [
-      join(root, "missing"),
-      join(root, "openspec"),
-      join(root, "not-directory"),
+    for (const [target, type] of [
+      [join(root, "missing"), "dir"],
+      [join(root, "openspec"), "dir"],
+      [join(root, "not-directory"), "file"],
     ]) {
       await writeFile(join(root, "not-directory"), "Not planning");
-      await symlink(target, join(root, "openspec"));
+      await symlink(target, join(root, "openspec"), type);
       const calls = [];
       await withService(
         async (url) => {
@@ -247,7 +243,7 @@ test("summary CLI never reads escaped goal metadata", async () => {
     const target = join(root, "openspec", "changes", "escaped-goal", ".openspec.yaml");
     await writeFile(join(root, "outside.yaml"), "goal: Must not be read\n");
     await rm(target);
-    await symlink(join(root, "outside.yaml"), target);
+    await symlink(join(root, "outside.yaml"), target, "file");
     let statusCalls = 0;
     await withService(
       async (url) => {
@@ -271,7 +267,7 @@ test("shared planning creation pins dispatch and reports retargeted outcomes as 
   await withProjects(async (main, replacement) => {
     const checkout = await mkdtemp(join(tempDirectory, "openspec-create-link-"));
     try {
-      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
       let writes = 0;
       await withService(
         async (url) => {
@@ -310,7 +306,7 @@ test("shared planning creation pins dispatch and reports retargeted outcomes as 
             writes++;
             assert.equal(cwd, main, "write must not traverse the mutable checkout link");
             await rm(join(checkout, "openspec"));
-            await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+            await symlink(join(replacement, "openspec"), join(checkout, "openspec"), "dir");
           }
           return runOpenSpec(cwd, args, remaining);
         },
@@ -325,7 +321,7 @@ test("shared creation rejects a planning link retarget before dispatch", async (
   await withProjects(async (main, replacement) => {
     const checkout = await mkdtemp(join(tempDirectory, "openspec-prewrite-link-"));
     try {
-      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
       let checks = 0;
       let writes = 0;
       await withService(
@@ -349,7 +345,7 @@ test("shared creation rejects a planning link retarget before dispatch", async (
           if (args[0] === "new") writes++;
           if (args[0] === "context" && ++checks === 3) {
             await rm(join(checkout, "openspec"));
-            await symlink(join(replacement, "openspec"), join(checkout, "openspec"));
+            await symlink(join(replacement, "openspec"), join(checkout, "openspec"), "dir");
           }
           return runOpenSpec(cwd, args, remaining);
         },
@@ -363,12 +359,12 @@ test("shared creation rejects a planning link retarget before dispatch", async (
 test("shared planning deletion preserves the link and rejects same-path directory replacement", async () => {
   await withProjects(async (main, checkout) => {
     await rm(join(checkout, "openspec"), { recursive: true });
-    await symlink(join(main, "openspec"), join(checkout, "openspec"));
+    await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
     await fixtureChange(main, "shared-delete", "Delete only this");
     const parent = join(main, "openspec", "changes");
     const target = join(parent, "shared-delete");
     await writeFile(join(main, "external.txt"), "Keep me");
-    await symlink(join(main, "external.txt"), join(target, "external-link"));
+    await symlink(join(main, "external.txt"), join(target, "external-link"), "file");
     let contexts = 0;
     let dispatched = 0;
     let replace = true;
@@ -416,7 +412,7 @@ test("shared deletion rejects replaced planning and active parent directories be
     await withProjects(async (main, checkout) => {
       await fixtureChange(main, "replace-parent", "Keep original and replacement");
       await rm(join(checkout, "openspec"), { recursive: true });
-      await symlink(join(main, "openspec"), join(checkout, "openspec"));
+      await symlink(join(main, "openspec"), join(checkout, "openspec"), "dir");
       const planning = join(main, "openspec");
       const replaced = component === "planning" ? planning : join(planning, "changes");
       const saved = join(main, `saved-${component}`);
@@ -1445,7 +1441,7 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
         await rm(metadataPath);
         const outside = join(root, "outside.yaml");
         await writeFile(outside, "affected_areas: [unsafe]\n");
-        await symlink(outside, metadataPath);
+        await symlink(outside, metadataPath, "file");
         assert.equal((await summary(true)).value.error.code, "BAD_METADATA_PATH");
         assert.equal(
           (await fetch(`${url}/health`, { headers: { authorization: "Bearer test-token" } }))
@@ -1455,6 +1451,61 @@ test("goal metadata is byte-bounded before YAML parsing while absent and boundar
       },
       batchRunner(runner, "goal-change"),
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI launches installed OpenSpec with intact arguments in a project path with spaces", async () => {
+  const root = await mockProject("openspec installed & ");
+  try {
+    await writeFile(join(root, "openspec", "config.yaml"), "schema: spec-driven\n");
+    const version = await runOpenSpec(root, ["version"]);
+    assert.equal(version.ok, true, JSON.stringify(version));
+    assert.match(version.value.version, /^\d+\.\d+\.\d+/);
+    if (process.env.OPENSPEC_TEST_INSTALL === "npm") {
+      assert.equal(version.value.install.packageManager, "npm");
+      assert.equal(version.value.install.scope, "global");
+    } else if (process.env.OPENSPEC_TEST_INSTALL === "standalone") {
+      assert.equal(version.value.install.scope, "standalone");
+    }
+    const goal = 'Support "Windows" & macOS with 日本語';
+    const created = await runOpenSpec(root, ["new", "change", "native-launch", "--goal", goal]);
+    assert.equal(created.ok, true, JSON.stringify(created));
+    assert.equal(created.value.change.id, "native-launch");
+    const metadata = await readFile(
+      join(root, "openspec", "changes", "native-launch", ".openspec.yaml"),
+      "utf8",
+    );
+    assert.equal(metadata.includes(goal), true, metadata);
+    const context = await runOpenSpec(root, ["context"]);
+    assert.equal(context.ok, true, JSON.stringify(context));
+    assert.equal(context.value.root.path, root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI preserves argument boundaries and distinguishes launch and operation failures", async () => {
+  const root = await mkdtemp(join(tempDirectory, "openspec arguments & "));
+  const script = join(root, "fake-cli");
+  try {
+    await writeFile(
+      script,
+      `#!/usr/bin/env node
+if (process.argv.includes("fail")) { process.stderr.write("Operation refused"); process.exit(2); }
+process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));
+`,
+    );
+    await chmod(script, 0o700);
+    const args = ["new", "change", "native-launch", "--goal", 'Support "quotes" & 日本語'];
+    const result = await runOpenSpec(root, args, 2000, { binary: script });
+    assert.deepEqual(result, { ok: true, value: { args: [...args, "--json"], cwd: root } });
+    const failed = await runOpenSpec(root, ["fail"], 2000, { binary: script });
+    assert.equal(failed.error.code, "OPENSPEC_ERROR");
+    assert.equal(failed.error.message, "Operation refused");
+    const missing = await runOpenSpec(root, [], 2000, { binary: join(root, "absent") });
+    assert.equal(missing.error.code, "CLI_UNAVAILABLE");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1531,7 +1582,7 @@ test("scoped routes expose distinct current documents and reject root changes an
   await writeFile(join(changeRoot, "specs", "first.md"), "First file");
   await writeFile(join(changeRoot, "specs", "second.md"), "Second file");
   await writeFile(join(root, "foreign.md"), "Foreign file");
-  await symlink(join(root, "foreign.md"), join(changeRoot, "specs", "escape.md"));
+  await symlink(join(root, "foreign.md"), join(changeRoot, "specs", "escape.md"), "file");
   let paths = [join(changeRoot, "specs", "first.md"), join(changeRoot, "specs", "second.md")];
   const calls = [];
   const runner = async (_directory, args) => {
@@ -1591,7 +1642,7 @@ test("scoped routes expose distinct current documents and reject root changes an
         const documents = metadata.documents;
         assert.deepEqual(
           documents.map((item) => item.label),
-          ["specs/first.md", "specs/second.md"],
+          [join("specs", "first.md"), join("specs", "second.md")],
         );
         for (const [index, expected] of ["First file", "Second file"].entries()) {
           const document = await post(url, "/document", {
@@ -1886,7 +1937,7 @@ test("delete removes only a listed active change after checking its original roo
     const target = join(root, "openspec", "changes", "remove-me");
     const external = join(directory, "external.txt");
     await writeFile(external, "outside");
-    await symlink(external, join(target, "linked.txt"));
+    await symlink(external, join(target, "linked.txt"), "file");
     await withService(async (url) => {
       const post = async (change, expectedRoot = root) =>
         fetch(`${url}/delete`, {
@@ -1946,7 +1997,7 @@ test("delete rejects symlinked parent and target even when CLI lists the change"
   try {
     await mkdir(parent, { recursive: true });
     await writeFile(join(external, "sentinel"), "untouched");
-    await symlink(external, target);
+    await symlink(external, target, "dir");
     await withService(async (url) => {
       const post = () =>
         fetch(`${url}/delete`, {
@@ -1957,7 +2008,7 @@ test("delete rejects symlinked parent and target even when CLI lists the change"
       assert.equal((await post()).status, 409);
       await rm(target);
       await rm(parent, { recursive: true });
-      await symlink(external, parent);
+      await symlink(external, parent, "dir");
       assert.equal((await post()).status, 409);
       assert.equal(await readFile(join(external, "sentinel"), "utf8"), "untouched");
     }, runner);
@@ -1991,7 +2042,7 @@ test("delete refuses a directory whose OpenSpec root changes after status", asyn
         ok: true,
         value:
           args[0] === "context"
-            ? { root: { path: ++contexts === 1 ? directory : "/tmp/opencode" } }
+            ? { root: { path: ++contexts === 1 ? directory : tempDirectory } }
             : args[0] === "list"
               ? { changes: [{ name: "unsafe-change", completedTasks: 0, totalTasks: 0 }] }
               : {
@@ -2038,7 +2089,7 @@ test("delete refuses a changes parent replaced during the final context check", 
       async (_cwd, args) => {
         if (args[0] === "context" && ++contexts === 2) {
           await rename(parent, `${parent}-original`);
-          await symlink(outside, parent);
+          await symlink(outside, parent, "dir");
         }
         return {
           ok: true,
@@ -2154,7 +2205,7 @@ test("filesystem failure after deletion dispatch reports an unknown outcome", as
 test("creation stays in the validated root after a selected-directory alias moves", async () => {
   await withProjects(async (first, second) => {
     const alias = join(first, "selected-alias");
-    await symlink(first, alias);
+    await symlink(first, alias, "dir");
     let writes = 0;
     await withService(
       async (url) => {
@@ -2194,7 +2245,7 @@ test("creation stays in the validated root after a selected-directory alias move
         if (args[0] === "new") {
           writes++;
           await rm(alias);
-          await symlink(second, alias);
+          await symlink(second, alias, "dir");
         }
         return runOpenSpec(cwd, args, remaining);
       },
@@ -2219,7 +2270,7 @@ test("workflow detection follows the global OpenSpec profile without a planning 
             ["ff", "verify", "sync", "archive"],
           ],
         ]) {
-          if (args) await exec("openspec", ["config", ...args], { cwd: base, env });
+          if (args) await runFixtureCommand("openspec", ["config", ...args], { cwd: base, env });
           const response = await fetch(`${url}/workflows`, {
             method: "POST",
             headers: { authorization: "Bearer test-token" },
@@ -2232,7 +2283,7 @@ test("workflow detection follows the global OpenSpec profile without a planning 
       async (cwd, args) => {
         assert.equal(cwd, base);
         assert.deepEqual(args, ["config", "list"]);
-        const { stdout } = await exec("openspec", [...args, "--json"], { cwd, env });
+        const { stdout } = await runFixtureCommand("openspec", [...args, "--json"], { cwd, env });
         return { ok: true, value: JSON.parse(stdout) };
       },
     );
@@ -2299,7 +2350,7 @@ test("creation stays in the validated registered store when its pointer changes"
   const second = join(base, "second-store");
   const project = join(base, "checkout");
   const config = join(project, "openspec", "config.yaml");
-  const cli = (cwd, args) => exec("openspec", args, { cwd, env, timeout: 30_000 });
+  const cli = (cwd, args) => runFixtureCommand("openspec", args, { cwd, env });
   try {
     await mkdir(join(project, "openspec"), { recursive: true });
     await cli(base, ["store", "setup", "first-store", "--path", first, "--no-init-git", "--json"]);
