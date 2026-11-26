@@ -63,7 +63,9 @@
 
 ## Releasing
 
-- Start from a clean, committed release branch with locked dependencies and a CLI version tested in
+- Land changes on `dev` first. `main` only fast-forwards to `dev`, because users install the default
+  branch and must get the latest release.
+- Release from a clean, committed `dev` with locked dependencies and a CLI version tested in
   `README.md`. Release forward rather than backfilling tags or Releases.
 - Ask before tagging, pushing, or creating a GitHub Release. After tag approval, use
   `npm version patch` (or `minor` / `major`; `prerelease --preid=alpha` for alphas). Keep lifecycle
@@ -73,6 +75,7 @@
   commit.
 - Label merged PRs using `.github/release.yml`. Write `highlights.md` outside the checkout with what
   is new, what comes next, and the roadmap issue link.
-- After push approval: `git push --atomic origin HEAD vX.Y.Z`. After Release approval:
+- After push approval: `git push --atomic origin dev dev:main vX.Y.Z`. `dev:main` fast-forwards
+  `main` to the version commit, and the push fails as a whole if it cannot. After Release approval:
   `gh release create vX.Y.Z --verify-tag --generate-notes --notes-file /path/to/highlights.md`. Add
   `--prerelease` for alpha/beta builds and review the published notes.
